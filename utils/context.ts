@@ -3,6 +3,7 @@ import {getLastInnerState} from './emotionState';
 import { readableContextMemories } from './contextMemories';
 import { getCachedUserHolidayReminder, type UserHolidayConfig } from './userHolidays';
 import { getUserLocationContext } from './userLocation';
+import { getUserCalendarContext } from './userCalendar';
 
 import { CharacterProfile, UserProfile, DailySchedule, MountedWorldbook } from '../types';
 import { normalizeUserImpression } from './impression';
@@ -608,6 +609,11 @@ const renderCoreContext = async (
             if (char.timeAwarenessEnabled !== false && !timeOptions?.skipTimeAwareness && !timeOptions?.skipUserHoliday) {
                 const holiday = getCachedUserHolidayReminder(user.name, timeOptions?.userHolidays);
                 if (holiday) context += `- ${holiday}\n\n`;
+            }
+            // 用户自己的日历（日历 App）。跟真实时间绑定，所以随时间感知开关走；
+            // 云端预打包（skipUserHoliday）时只写绝对日期，避免「明天」到执行时已过期。
+            if (char.timeAwarenessEnabled !== false && !timeOptions?.skipTimeAwareness) {
+                context += await getUserCalendarContext(user.name, !timeOptions?.skipUserHoliday);
             }
         }
 
