@@ -4,6 +4,7 @@ import { readableContextMemories } from './contextMemories';
 import { getCachedUserHolidayReminder, type UserHolidayConfig } from './userHolidays';
 import { getUserLocationContext } from './userLocation';
 import { getUserCalendarContext } from './userCalendar';
+import { getUserTimetableContext } from './userTimetable';
 
 import { CharacterProfile, UserProfile, DailySchedule, MountedWorldbook } from '../types';
 import { normalizeUserImpression } from './impression';
@@ -614,6 +615,7 @@ const renderCoreContext = async (
             // 云端预打包（skipUserHoliday）时只写绝对日期，避免「明天」到执行时已过期。
             if (char.timeAwarenessEnabled !== false && !timeOptions?.skipTimeAwareness) {
                 context += await getUserCalendarContext(user.name, !timeOptions?.skipUserHoliday);
+                context += await getUserTimetableContext(user.name, !timeOptions?.skipUserHoliday);
             }
         }
 

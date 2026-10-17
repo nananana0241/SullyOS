@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CaretLeft, CaretRight, Plus, Trash, Clock, ArrowCounterClockwise } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, Plus, Trash, Clock, ArrowCounterClockwise, MapPin, GraduationCap } from '@phosphor-icons/react';
 import { useOS } from '../context/OSContext';
 import Modal from '../components/os/Modal';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
@@ -11,11 +11,32 @@ import {
     CALENDAR_CONTEXT_FUTURE_DAYS,
     type UserCalendarEvent,
 } from '../utils/userCalendar';
+import {
+    loadUserTimetable,
+    saveUserTimetable,
+    sortTimetable,
+    classesOnDate,
+    formatClassTime,
+    WEEKDAY_NAMES,
+    type TimetableClass,
+} from '../utils/userTimetable';
 
 /**
- * 日历 — 用户自己的日程本。
- * 数据见 utils/userCalendar.ts；最近几天的安排会由 ContextBuilder 注入给角色。
+ * 日历 — 用户自己的日程本 + 每周课表。
+ * 数据见 utils/userCalendar.ts、utils/userTimetable.ts；都会由 ContextBuilder 注入给角色。
  */
+
+type ClassDraft = {
+    id?: string; name: string; weekday: number; start: string; end: string;
+    location: string; teacher: string; note: string;
+};
+
+const emptyClassDraft = (weekday: number): ClassDraft => ({
+    name: '', weekday, start: '08:00', end: '', location: '', teacher: '', note: '',
+});
+
+/** 课表页按周一 → 周日分组 */
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 const WEEK_HEADERS = ['日', '一', '二', '三', '四', '五', '六'];
 
@@ -50,10 +71,64 @@ const UserCalendarApp: React.FC = () => {
         return { year: d.getFullYear(), month: d.getMonth() };
     });
     const [draft, setDraft] = useState<Draft | null>(null);
+    const [tab, setTab] = useState<'calendar' | 'timetable'>('calendar');
+    const [classes, setClasses] = useState<TimetableClass[]>([]);
+    const [classDraft, setClassDraft] = useState<ClassDraft | null>(null);
 
     useEffect(() => {
-        loadUserCalendar().then(list => { setEvents(list); setLoaded(true); });
+        Promise.all([loadUserCalendar(), loadUserTimetable()]).then(([list, tt]) => {
+            setEvents(list);
+            setClasses(tt);
+            setLoaded(true);
+        });
     }, []);
+
+    const persistClasses = async (next: TimetableClass[]) => {
+        const sorted = sortTimetable(next);
+        setClasses(sorted);
+        try {
+            await saveUserTimetable(sorted);
+        } catch {
+            addToast('保存失败，可能是存储空间不足', 'error');
+        }
+    };
+
+    const openClassEdit = (c: TimetableClass) => setClassDraft({
+        id: c.id, name: c.name, weekday: c.weekday, start: c.start, end: c.end || '',
+        location: c.location || '', teacher: c.teacher || '', note: c.note || '',
+    });
+
+    const submitClass = async () => {
+        if (!classDraft) return;
+        const name = classDraft.name.trim();
+        if (!name) { addToast('写一下课程名吧', 'info'); return; }
+        const start = classDraft.start.slice(0, 5);
+        const end = classDraft.end.slice(0, 5);
+        if (!start) { addToast('填一下开始时间', 'info'); return; }
+        if (end && end <= start) { addToast('结束时间要晚于开始时间', 'info'); return; }
+        const existing = classDraft.id ? classes.find(c => c.id === classDraft.id) : undefined;
+        const item: TimetableClass = {
+            id: classDraft.id || `cls_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name,
+            weekday: classDraft.weekday,
+            start,
+            createdAt: existing?.createdAt ?? Date.now(),
+            ...(end ? { end } : {}),
+            ...(classDraft.location.trim() ? { location: classDraft.location.trim() } : {}),
+            ...(classDraft.teacher.trim() ? { teacher: classDraft.teacher.trim() } : {}),
+            ...(classDraft.note.trim() ? { note: classDraft.note.trim() } : {}),
+        };
+        await persistClasses([...classes.filter(c => c.id !== item.id), item]);
+        setClassDraft(null);
+        addToast(existing ? '已更新' : '已加入课表', 'success');
+    };
+
+    const removeClass = async () => {
+        if (!classDraft?.id) return;
+        await persistClasses(classes.filter(c => c.id !== classDraft.id));
+        setClassDraft(null);
+        addToast('已删除', 'info');
+    };
 
     const byDate = useMemo(() => {
         const map = new Map<string, UserCalendarEvent[]>();
@@ -68,6 +143,8 @@ const UserCalendarApp: React.FC = () => {
     const grid = useMemo(() => buildMonthGrid(cursor.year, cursor.month), [cursor]);
     const monthPrefix = `${cursor.year}-${String(cursor.month + 1).padStart(2, '0')}`;
     const dayEvents = byDate.get(selected) || [];
+    const dayClasses = useMemo(() => classesOnDate(classes, selected), [classes, selected]);
+    const classWeekdays = useMemo(() => new Set(classes.map(c => c.weekday)), [classes]);
 
     // 会被角色看到的范围：今天起往后几天
     const upcomingCount = useMemo(() => events.filter(e => {
@@ -143,10 +220,22 @@ const UserCalendarApp: React.FC = () => {
                     <button onClick={closeApp} aria-label="返回" className="p-2 -ml-2 rounded-full active:scale-90 transition-transform hover:bg-black/5">
                         <CaretLeft className="w-6 h-6 text-sky-500" weight="bold" />
                     </button>
-                    <div className="text-base font-bold tracking-wide">日历</div>
+                    <div role="tablist" className="flex gap-1 p-1 rounded-full bg-white/70 border border-white shadow-sm">
+                        {([['calendar', '日历'], ['timetable', '课表']] as const).map(([id, label]) => (
+                            <button
+                                key={id}
+                                role="tab"
+                                aria-selected={tab === id}
+                                onClick={() => setTab(id)}
+                                className={`px-4 py-1 rounded-full text-sm font-bold transition-colors ${tab === id ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-400'}`}
+                            >{label}</button>
+                        ))}
+                    </div>
                     <button
-                        onClick={() => setDraft(emptyDraft(selected))}
-                        aria-label="添加日程"
+                        onClick={() => tab === 'calendar'
+                            ? setDraft(emptyDraft(selected))
+                            : setClassDraft(emptyClassDraft(parseLocalDateKey(selected)?.getDay() ?? 1))}
+                        aria-label={tab === 'calendar' ? '添加日程' : '添加课程'}
                         className="p-2 -mr-2 rounded-full active:scale-90 transition-transform hover:bg-black/5"
                     >
                         <Plus className="w-6 h-6 text-sky-500" weight="bold" />
@@ -155,6 +244,7 @@ const UserCalendarApp: React.FC = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto no-scrollbar px-4 space-y-4" style={{ paddingBottom: 'calc(var(--safe-bottom, 0px) + 1.5rem)' }}>
+                {tab === 'calendar' && <>
                 {/* Month card */}
                 <div className="bg-white/80 backdrop-blur-xl rounded-3xl shadow-sm border border-white p-4">
                     <div className="flex items-center justify-between mb-3">
@@ -201,6 +291,9 @@ const UserCalendarApp: React.FC = () => {
                                                 : inMonth ? 'text-slate-700' : 'text-slate-300'
                                     }`}>{day}</span>
                                     <span className="h-1.5 flex gap-0.5 mt-0.5">
+                                        {inMonth && classWeekdays.has(parseLocalDateKey(key)?.getDay() ?? -1) && (
+                                            <span className="w-1 h-1 rounded-full bg-indigo-300" />
+                                        )}
                                         {Array.from({ length: Math.min(count, 3) }, (_, i) => (
                                             <span key={i} className={`w-1 h-1 rounded-full ${inMonth ? 'bg-sky-400' : 'bg-slate-300'}`} />
                                         ))}
@@ -218,7 +311,7 @@ const UserCalendarApp: React.FC = () => {
                         <span className="text-[11px] text-slate-400">{selected}</span>
                     </div>
 
-                    {loaded && dayEvents.length === 0 && (
+                    {loaded && dayEvents.length === 0 && dayClasses.length === 0 && (
                         <button
                             onClick={() => setDraft(emptyDraft(selected))}
                             className="w-full py-8 border-2 border-dashed border-slate-200 rounded-2xl text-sm text-slate-400 active:scale-[0.98] transition-transform"
@@ -228,6 +321,24 @@ const UserCalendarApp: React.FC = () => {
                     )}
 
                     <div className="space-y-2">
+                        {dayClasses.map(c => (
+                            <button
+                                key={c.id}
+                                onClick={() => openClassEdit(c)}
+                                className="w-full text-left bg-indigo-50/80 backdrop-blur-xl rounded-2xl border border-white shadow-sm px-4 py-3 flex gap-3 active:scale-[0.98] transition-transform"
+                            >
+                                <div className="w-1 self-stretch rounded-full bg-indigo-400 shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 font-bold text-sm text-slate-700 break-words">
+                                        <GraduationCap className="w-4 h-4 text-indigo-400 shrink-0" />{c.name}
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-400 mt-0.5">
+                                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatClassTime(c)}</span>
+                                        {c.location && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{c.location}</span>}
+                                    </div>
+                                </div>
+                            </button>
+                        ))}
                         {dayEvents.map(e => (
                             <button
                                 key={e.id}
@@ -252,6 +363,62 @@ const UserCalendarApp: React.FC = () => {
                     {upcomingCount ? `（现在有 ${upcomingCount} 条）` : ''}。
                     需要角色开着「时间感知」。数据只存在这台设备上，会跟着「设置 → 备份与恢复」一起备份。
                 </p>
+                </>}
+
+                {tab === 'timetable' && <>
+                    {loaded && classes.length === 0 && (
+                        <button
+                            onClick={() => setClassDraft(emptyClassDraft(1))}
+                            className="w-full py-10 border-2 border-dashed border-slate-200 rounded-2xl text-sm text-slate-400 active:scale-[0.98] transition-transform"
+                        >
+                            课表还是空的，点这里添加第一节课
+                        </button>
+                    )}
+
+                    {WEEK_ORDER.map(wd => {
+                        const list = classes.filter(c => c.weekday === wd);
+                        if (!list.length) return null;
+                        const isToday = parseLocalDateKey(today)?.getDay() === wd;
+                        return (
+                            <div key={wd}>
+                                <div className="flex items-center justify-between px-1 mb-2">
+                                    <h3 className={`text-sm font-bold ${isToday ? 'text-sky-500' : ''}`}>
+                                        {WEEKDAY_NAMES[wd]}{isToday && <span className="ml-1.5 text-[10px] bg-sky-50 px-1.5 py-0.5 rounded-full">今天</span>}
+                                    </h3>
+                                    <button onClick={() => setClassDraft(emptyClassDraft(wd))} aria-label={`给${WEEKDAY_NAMES[wd]}添加课程`} className="p-1 rounded-full active:scale-90 hover:bg-black/5">
+                                        <Plus className="w-4 h-4 text-slate-400" weight="bold" />
+                                    </button>
+                                </div>
+                                <div className="space-y-2">
+                                    {list.map(c => (
+                                        <button
+                                            key={c.id}
+                                            onClick={() => openClassEdit(c)}
+                                            className="w-full text-left bg-white/80 backdrop-blur-xl rounded-2xl border border-white shadow-sm px-4 py-3 flex gap-3 active:scale-[0.98] transition-transform"
+                                        >
+                                            <div className="w-14 shrink-0 text-xs font-bold text-indigo-500 leading-tight pt-0.5">
+                                                <div>{c.start}</div>
+                                                {c.end && <div className="text-slate-300 font-normal">{c.end}</div>}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="font-bold text-sm text-slate-700 break-words">{c.name}</div>
+                                                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-400 mt-0.5">
+                                                    {c.location && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{c.location}</span>}
+                                                    {c.teacher && <span>{c.teacher}</span>}
+                                                </div>
+                                                {c.note && <div className="text-xs text-slate-500 mt-1 whitespace-pre-wrap break-words">{c.note}</div>}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })}
+
+                    <p className="text-[11px] leading-relaxed text-slate-400 px-1">
+                        课表每周重复，时间和地点都可以自由填写。角色聊天时会看到你今天和明天的课，日历里点某一天也能看到那天的课。
+                    </p>
+                </>}
             </div>
 
             <Modal
@@ -319,6 +486,103 @@ const UserCalendarApp: React.FC = () => {
                                 maxLength={300}
                                 placeholder="地点、要带的东西、心情…"
                                 className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-sky-300 resize-none"
+                            />
+                        </label>
+                    </div>
+                )}
+            </Modal>
+
+            <Modal
+                isOpen={!!classDraft}
+                title={classDraft?.id ? '编辑课程' : '添加课程'}
+                onClose={() => setClassDraft(null)}
+                footer={classDraft && (
+                    <>
+                        {classDraft.id && (
+                            <button onClick={removeClass} aria-label="删除课程" className="px-4 py-3 bg-rose-50 text-rose-500 rounded-2xl active:scale-95 transition-transform">
+                                <Trash className="w-5 h-5" />
+                            </button>
+                        )}
+                        <button onClick={() => setClassDraft(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl active:scale-95 transition-transform">取消</button>
+                        <button onClick={submitClass} className="flex-1 py-3 bg-indigo-500 text-white font-bold rounded-2xl shadow-lg shadow-indigo-200 active:scale-95 transition-transform">保存</button>
+                    </>
+                )}
+            >
+                {classDraft && (
+                    <div className="space-y-3">
+                        <label className="block">
+                            <span className="text-[11px] text-slate-500 font-medium mb-1 block">课程名</span>
+                            <input
+                                value={classDraft.name}
+                                onChange={ev => setClassDraft({ ...classDraft, name: ev.target.value })}
+                                placeholder="比如：高等数学"
+                                maxLength={60}
+                                autoFocus
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300"
+                            />
+                        </label>
+                        <div>
+                            <span className="text-[11px] text-slate-500 font-medium mb-1 block">星期几</span>
+                            <div className="grid grid-cols-7 gap-1">
+                                {WEEK_ORDER.map(wd => (
+                                    <button
+                                        key={wd}
+                                        type="button"
+                                        aria-pressed={classDraft.weekday === wd}
+                                        onClick={() => setClassDraft({ ...classDraft, weekday: wd })}
+                                        className={`py-2 rounded-lg text-xs font-bold transition-colors ${classDraft.weekday === wd ? 'bg-indigo-500 text-white' : 'bg-slate-50 text-slate-500'}`}
+                                    >{WEEKDAY_NAMES[wd].slice(1)}</button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                            <label className="block">
+                                <span className="text-[11px] text-slate-500 font-medium mb-1 block">开始</span>
+                                <input
+                                    type="time"
+                                    value={classDraft.start}
+                                    onChange={ev => setClassDraft({ ...classDraft, start: ev.target.value })}
+                                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300"
+                                />
+                            </label>
+                            <label className="block">
+                                <span className="text-[11px] text-slate-500 font-medium mb-1 block">结束（可不填）</span>
+                                <input
+                                    type="time"
+                                    value={classDraft.end}
+                                    onChange={ev => setClassDraft({ ...classDraft, end: ev.target.value })}
+                                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300"
+                                />
+                            </label>
+                        </div>
+                        <label className="block">
+                            <span className="text-[11px] text-slate-500 font-medium mb-1 block">地点</span>
+                            <input
+                                value={classDraft.location}
+                                onChange={ev => setClassDraft({ ...classDraft, location: ev.target.value })}
+                                placeholder="比如：教三 201 / 线上"
+                                maxLength={60}
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300"
+                            />
+                        </label>
+                        <label className="block">
+                            <span className="text-[11px] text-slate-500 font-medium mb-1 block">老师（可选）</span>
+                            <input
+                                value={classDraft.teacher}
+                                onChange={ev => setClassDraft({ ...classDraft, teacher: ev.target.value })}
+                                maxLength={30}
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300"
+                            />
+                        </label>
+                        <label className="block">
+                            <span className="text-[11px] text-slate-500 font-medium mb-1 block">备注（可选，角色也能看到）</span>
+                            <textarea
+                                value={classDraft.note}
+                                onChange={ev => setClassDraft({ ...classDraft, note: ev.target.value })}
+                                rows={2}
+                                maxLength={200}
+                                placeholder="单双周、要交作业…"
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none focus:border-indigo-300 resize-none"
                             />
                         </label>
                     </div>
