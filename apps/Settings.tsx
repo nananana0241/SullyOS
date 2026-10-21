@@ -518,6 +518,7 @@ const Settings: React.FC = () => {
   const [localImageGenKey, setLocalImageGenKey] = useState(apiConfig.imageGen?.apiKey || '');
   const [localImageGenModel, setLocalImageGenModel] = useState(apiConfig.imageGen?.model || '');
   const [localImageGenSize, setLocalImageGenSize] = useState(apiConfig.imageGen?.size || '');
+  const [localImageGenStyle, setLocalImageGenStyle] = useState(apiConfig.imageGen?.stylePrompt || '');
   const [testingImageGen, setTestingImageGen] = useState(false);
   const [imageGenStatusMsg, setImageGenStatusMsg] = useState('');
   const [localMiniMaxKey, setLocalMiniMaxKey] = useState(apiConfig.minimaxApiKey || '');
@@ -1268,6 +1269,7 @@ const Settings: React.FC = () => {
       apiKey: normalizeApiCredential(localImageGenKey),
       model: normalizeApiModel(localImageGenModel),
       ...(localImageGenSize ? { size: localImageGenSize } : {}),
+      ...(localImageGenStyle.trim() ? { stylePrompt: localImageGenStyle.trim() } : {}),
     };
     if (enabled && (!next.baseUrl || !next.apiKey || !next.model)) {
       addToast('开启生图 API 前，请填写完整的 URL、Key 和 Model', 'error');
@@ -2934,6 +2936,21 @@ const Settings: React.FC = () => {
                             placeholder="gpt-image-1 / dall-e-3 / 你中转支持的模型名"
                             className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
                         />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">画风提示词</label>
+                        <textarea
+                            value={localImageGenStyle}
+                            onChange={event => setLocalImageGenStyle(event.target.value)}
+                            disabled={!localImageGenEnabled}
+                            rows={3}
+                            maxLength={400}
+                            placeholder="比如：日系水彩插画，柔和光线，淡淡的胶片颗粒感"
+                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed resize-none"
+                        />
+                        <p className="text-[9px] text-slate-300 mt-1 px-1">
+                            会固定追加在角色写的画面描述后面。角色知道画风是固定的，只写画面内容。留空则不追加。
+                        </p>
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">图片尺寸</label>

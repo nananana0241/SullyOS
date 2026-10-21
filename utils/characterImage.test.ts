@@ -1,5 +1,26 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { hasImageTags, splitImageTags, stripImageTags, downloadImageToRef } from './characterImage';
+import { ChatParser } from './chatParser';
+import { sanitizeForBubble } from './sanitize';
+
+describe('characterImage / sanitize survival', () => {
+    // 回归：曾经把 [[IMAGE:]] / [[DRAW:]] 加进 stripBusinessTagsForBubble，结果标签在
+    // applyAssistantPostProcessing 解析之前就被洗掉了——角色写了标签，气泡里什么都没发生。
+    // 气泡清洗必须放行这两个标签，只有通知路径（终态、没有下游）才剥。
+    it('keeps image tags through bubble sanitize', () => {
+        const raw = '好看吗\n[[DRAW: 一只猫]]\n[[IMAGE: https://example.com/a.jpg]]';
+        const sanitized = sanitizeForBubble(raw, { keepCitations: true });
+        expect(sanitized).toContain('[[DRAW: 一只猫]]');
+        expect(sanitized).toContain('[[IMAGE: https://example.com/a.jpg]]');
+    });
+
+    it('still splits them out after the chat parser sees them', () => {
+        const raw = '好看吗\n[[DRAW: 一只猫]]';
+        const cleaned = ChatParser.sanitize(raw, { keepCitations: true });
+        const parts = splitImageTags(cleaned);
+        expect(parts.some(p => p.type === 'draw' && p.content === '一只猫')).toBe(true);
+    });
+});
 
 describe('characterImage / splitImageTags', () => {
     it('splits text and image tags in model order', () => {

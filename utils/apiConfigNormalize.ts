@@ -39,6 +39,7 @@ export function normalizeApiConfig(config: APIConfig): APIConfig {
         apiKey: normalizeApiCredential(imageGen.apiKey),
         model: normalizeApiModel(imageGen.model),
         ...(imageGen.size ? { size: String(imageGen.size).trim() } : {}),
+        ...(imageGen.stylePrompt ? { stylePrompt: String(imageGen.stylePrompt).trim() } : {}),
       },
     } : {}),
   };

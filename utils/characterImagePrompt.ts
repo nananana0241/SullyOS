@@ -32,6 +32,7 @@ export function buildCharacterImageBlock(
         (server.tools || []).some(tool => /search|browse|web/i.test(tool.name)));
     if (!canDraw && !hasSearch) return '';
 
+    const style = (options.imageGen?.stylePrompt || '').trim();
     const lines: string[] = [];
     lines.push('');
     lines.push('---');
@@ -42,8 +43,10 @@ export function buildCharacterImageBlock(
     if (canDraw) {
         lines.push('1. 画一张新的：');
         lines.push('   `[[DRAW: 画面的具体描述]]`');
-        lines.push('   - 描述要具体：主体、动作、场景、光线、氛围、画风。可以带上你此刻的心情。');
+        lines.push('   - 描述要具体：主体、动作、场景、光线、氛围。可以带上你此刻的心情。');
+        if (style) lines.push(`   - **画风固定为：${style}**。不用在描述里重复画风，只写画面内容。`);
         lines.push('   - 画图要等十几秒到一分钟，别连着画好几张。');
+        lines.push('   - 发出标签后，先用一句话说说你在画什么，让对方知道你在忙这件事。');
         if (hasSearch) lines.push('');
     }
     if (hasSearch) {

@@ -534,6 +534,7 @@ export const useChatAI = ({
     const [inboxWait, setInboxWait] = useState<{ charId: string; token: object } | null>(null);
     const inboxStatus = inboxWait && inboxWait.charId === char?.id ? '正在接收刚到的消息…' : '';
     const [searchStatus, setSearchStatus] = useState<string>('');
+    const [imageStatus, setImageStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
     const [xhsStatus, setXhsStatus] = useState<string>('');
     const [emotionStatus, setEmotionStatus] = useState<string>('');
@@ -2094,6 +2095,7 @@ export const useChatAI = ({
                     setSearchStatus,
                     setDiaryStatus,
                     setXhsStatus,
+                    setImageStatus,
                     updateTokenUsage,
                     // 整组 musicHooks 由 MusicProvider 注册到模块级 slot, 本地 fetch 路径和
                     // 云端回复的冲刷 (activeMsgRuntime) 共享同一份, 见 MusicContext.loadMusicHooks.
@@ -2293,6 +2295,7 @@ export const useChatAI = ({
         inboxStatus,
         recallStatus,
         searchStatus,
+        imageStatus,
         diaryStatus,
         xhsStatus,
         emotionStatus,

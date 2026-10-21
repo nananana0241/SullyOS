@@ -57,9 +57,12 @@ export async function generateImage(
         const size = options?.size
             ? (SIZE_FOR_ASPECT[options.size] || options.size)
             : (config.size || undefined);
+        // 画风后缀由用户在设置里固定，角色只写画面内容，不重复写风格。
+        const style = (config.stylePrompt || '').trim();
+        const finalPrompt = style ? `${cleanPrompt}\n\n画风要求：${style}` : cleanPrompt;
         const body: Record<string, unknown> = {
             model: config.model.trim(),
-            prompt: cleanPrompt,
+            prompt: finalPrompt,
             n: 1,
             // 要求 base64：URL 形式的图很多中转几小时就失效，存到本机才是真存住
             response_format: 'b64_json',
