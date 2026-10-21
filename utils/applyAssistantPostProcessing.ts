@@ -483,6 +483,8 @@ export interface PostProcessHooks {
     setSearchStatus?: (s: string) => void;
     setDiaryStatus?: (s: string) => void;
     setXhsStatus?: (s: string) => void;
+    /** 角色正在生图/找图时的状态文案（显示在聊天状态条上）。 */
+    setImageStatus?: (s: string) => void;
     /** token 计费汇总 (调用方负责把 React state 同步上去) */
     updateTokenUsage?: (data: any, msgCount: number, pass: string) => void;
     /** 给 ChatParser.parseAndExecuteActions 用的音乐钩子 */
@@ -857,12 +859,17 @@ export async function applyAssistantPostProcessing(
                 if (!isImageGenReady(imageGen)) {
                     failure = '（想画张图，但生图接口没配置好）';
                 } else {
+                    // 画一张要几十秒，界面上必须看得见，否则用户以为消息卡死了
+                    hooks.setImageStatus?.(`正在画：${value.slice(0, 24)}…`);
                     const result = await replyStep(async () => generateImage(value, imageGen!));
+                    hooks.setImageStatus?.('');
                     if ('ref' in result) ref = result.ref;
                     else failure = `（想画张图，但没画成：${result.error}）`;
                 }
             } else {
+                hooks.setImageStatus?.('正在找一张合适的图…');
                 const result = await replyStep(async () => downloadImageToRef(value));
+                hooks.setImageStatus?.('');
                 if ('ref' in result) ref = result.ref;
                 else failure = `（想给你看张图，但没加载出来：${result.error}）`;
             }

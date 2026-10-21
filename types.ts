@@ -284,6 +284,11 @@ export interface ImageGenApiConfig {
   model: string;
   /** 可选，默认按 1024x1024。只能填 OpenAI 那几种（1024x1024 / 1024x1536 / 1536x1024）。 */
   size?: string;
+  /**
+   * 画风/风格提示词，追加在角色写的画面描述后面一起发给生图接口。
+   * 也能让角色知道"我的画风是固定的"，不会在描述里重复写风格。
+   */
+  stylePrompt?: string;
 }
 
 /** A complete dialogue endpoint, separate from TTS/vision configuration. */
