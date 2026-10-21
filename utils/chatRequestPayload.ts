@@ -15,7 +15,7 @@ import { protectPendingChatTurn } from './storyTheaterTimeline';
  * 等价。新增 caller（runProactive）只是补齐了过去缺的字段。
  */
 
-import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig, VisionApiConfig } from '../types';
+import type { CharacterProfile, UserProfile, GroupProfile, Emoji, EmojiCategory, Message, RealtimeConfig, TranslationConfig, VisionApiConfig, ImageGenApiConfig } from '../types';
 import { ChatPrompts, detectChatModeTransition } from './chatPrompts';
 import { ContextBuilder } from './context';
 import { injectMemoryPalace } from './memoryPalace/pipeline';
@@ -33,6 +33,7 @@ import { buildLuckinMiniAppContextBlock, buildLuckinChatSystemBlock } from './lu
 import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge';
 import { isMcpChatAvailable } from './mcpClient';
 import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
+import { buildCharacterImageBlock, IMAGE_TAIL_REMINDER } from './characterImagePrompt';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot, RecentTrackChange } from '../context/MusicContext';
 import { isPromptBuildSkipped, isSystemMessageMergeEnabled } from './devDebug';
 import { mergeSystemMessages } from './systemMessageMerge';
@@ -64,6 +65,8 @@ export interface BuildChatPayloadInput {
     homePhoneContext?: string;
     char: CharacterProfile;
     userProfile: UserProfile;
+    /** 角色发图（[[IMAGE:]] / [[DRAW:]]）用的生图配置；不传 = 不能画图。 */
+    imageGen?: ImageGenApiConfig;
     groups: GroupProfile[];
     emojis: Emoji[];
     categories: EmojiCategory[];
@@ -155,6 +158,7 @@ export interface BuildChatPayloadResult {
         luckinActive: boolean;
         luckinChatActive: boolean;
         mcpChatActive: boolean;
+        imageChatActive: boolean;
         htmlActive: boolean;
         thinkingActive: boolean;
         sarModuleActive: boolean;
@@ -312,6 +316,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
                 luckinActive: false,
                 luckinChatActive: false,
                 mcpChatActive: false,
+                imageChatActive: false,
                 htmlActive: false,
                 thinkingActive: false,
                 sarModuleActive: false,
@@ -487,6 +492,17 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         }
     }
 
+    // ── 9e. 角色发图（[[IMAGE:]] / [[DRAW:]]，见 utils/characterImage.ts）──
+    // 跟 MCP 说明一样属于稳定段：能力清单变化很慢。即时对话那条路由 worker 单独供给，
+    // 这里同样不为它注入。
+    const imageBlock = input.appPrompt
+        ? ''
+        : buildCharacterImageBlock(userProfile?.name || '用户', { imageGen: input.imageGen, charId: char.id });
+    const imageChatActive = !!imageBlock;
+    if (imageChatActive && !input.timelyByWorker) {
+        systemPrompt += imageBlock;
+    }
+
     // ── 10. recency 钢印归位 + 组装 fullMessages ─────────
     // 私聊与 3D 家园共用本地语境分析：它告诉主模型“这句话此刻在做什么”，
     // 不指定具体记忆答案、不改变角色人格，也不进入其他 App 的专属写作提示。
@@ -538,6 +554,9 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
     if (mcpChatActive && !input.timelyByWorker) {
         fullMessages.push({ role: 'system', content: MCP_TAIL_REMINDER });
+    }
+    if (imageChatActive && !input.timelyByWorker) {
+        fullMessages.push({ role: 'system', content: IMAGE_TAIL_REMINDER });
     }
     if (sarModuleBlock && !input.appPrompt) {
         fullMessages.push({
@@ -597,6 +616,6 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         volatileTailIndex: finalMessages === fullMessages ? volatileTailIndex : -1,
         amsg2ExpiredNoticeIds,
         recallTrace,
-        flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, sarModuleActive: !!sarModuleBlock, promptBuildSkipped: false },
+        flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, imageChatActive, htmlActive, thinkingActive, sarModuleActive: !!sarModuleBlock, promptBuildSkipped: false },
     };
 }

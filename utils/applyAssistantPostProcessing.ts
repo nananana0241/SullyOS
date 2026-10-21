@@ -25,7 +25,7 @@ import { withReplyCancellation, type ReplyRun } from './chatReplyCancellation';
  * directives 传过来, 这里只重放。
  */
 
-import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, RealtimeConfig, GroupProfile } from '../types';
+import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, RealtimeConfig, GroupProfile, ImageGenApiConfig } from '../types';
 import { DB } from './db';
 import { ChatParser, type FrozenMusicSong } from './chatParser';
 import { resolveCharTimeZone } from './timezone';
@@ -56,6 +56,8 @@ import { announceScheduleChanges, applyAssistantScheduleChanges } from './schedu
 import { isBlobRef } from './blobRef';
 import { consumeSARChatSurfaceChunk, type SARModuleSurfaceMeta } from './vrWorld/sarModuleRuntime';
 import { stripLeakedSourceTags } from './sanitize';
+import { splitImageTags, stripImageTags, downloadImageToRef, saveAssistantImageToGallery } from './characterImage';
+import { generateImage, isImageGenReady } from './imageStudio';
 
 // ─── 模块内辅助 ──────────────────────────────────────────────────────────────
 
@@ -540,6 +542,13 @@ export interface PostProcessCtx {
     lastXhsNotesRef?: { current: XhsNote[] };
     /** API 调用配置 */
     api: PostProcessApiCall;
+    /** 用户配置的生图中转（角色写 [[DRAW:]] 时用）。没配则不画图。 */
+    imageGen?: ImageGenApiConfig;
+    /**
+     * 置 true 才允许角色发图（[[IMAGE:]] / [[DRAW:]]）。
+     * 关掉时图片标签会被当普通未知标签剥掉，不会残留到气泡里。
+     */
+    imageChatEnabled?: boolean;
     /** UI / 业务钩子 */
     hooks: PostProcessHooks;
     /**
@@ -615,6 +624,8 @@ export async function applyAssistantPostProcessing(
         reasoningContent: pushReasoningContent,
         messageTimestamp,
         sarModuleSurface,
+        imageGen,
+        imageChatEnabled,
     } = ctx;
     const { baseUrl, headers, effectiveApi } = api;
     // 拟人打字延迟：流式预览已实时展示过气泡时（instantRender）跳过，避免二次慢放
@@ -836,6 +847,48 @@ export async function applyAssistantPostProcessing(
             return merged;
         };
 
+        // 角色发图：把 [[IMAGE: 链接]] / [[DRAW: 描述]] 变成真正的图片消息。
+        // 下载/生图失败不静默丢——落一条带原因的降级文字气泡，用户至少知道发生过什么。
+        const sendImageBubble = async (kind: 'image' | 'draw', value: string): Promise<void> => {
+            await replyStep(async () => typingPause(Math.random() * 500 + 300));
+            let ref: string | null = null;
+            let failure = '';
+            if (kind === 'draw') {
+                if (!isImageGenReady(imageGen)) {
+                    failure = '（想画张图，但生图接口没配置好）';
+                } else {
+                    const result = await replyStep(async () => generateImage(value, imageGen!));
+                    if ('ref' in result) ref = result.ref;
+                    else failure = `（想画张图，但没画成：${result.error}）`;
+                }
+            } else {
+                const result = await replyStep(async () => downloadImageToRef(value));
+                if ('ref' in result) ref = result.ref;
+                else failure = `（想给你看张图，但没加载出来：${result.error}）`;
+            }
+
+            if (!ref) {
+                console.warn('[image] 角色发图失败，落降级文本气泡', { kind, value, failure });
+                await replyStep(async () => persistMessage({
+                    charId: char.id, role: 'assistant', type: 'text', content: failure, metadata: takeMeta(mcdInheritMeta),
+                } as any));
+                setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
+                return;
+            }
+
+            const savedId = await replyStep(async () => persistMessage({
+                charId: char.id, role: 'assistant', type: 'image', content: ref, metadata: takeMeta(mcdInheritMeta),
+            } as any));
+            await replyStep(async () => saveAssistantImageToGallery(
+                char.id,
+                ref!,
+                savedId,
+                getLocalDateKey(new Date(messageTimestamp ?? Date.now())),
+                kind === 'draw' ? [`角色画图：${value}`] : undefined,
+            ));
+            setMessages(await replyStep(async () => DB.getRecentMessagesByCharId(char.id, 200)));
+        };
+
         // 表情按模型写的位置原地插发。名字在表情库里找不到时落一条降级文本气泡，不静默丢：
         // 后台主动消息会把每个 [[SEND_EMOJI]] 切成独立一条 push，找不到就是整条 0 气泡，而
         // 系统横幅和未读数照常 +1 —— 用户点进去空空如也。名字对不上有两条常见来路：模型自己
@@ -900,9 +953,16 @@ export async function applyAssistantPostProcessing(
             // 表情包按模型写的位置原地插发（sendEmojiBubble 见函数顶部）。旧实现先把所有
             // [[SEND_EMOJI:]] 抽走、正文发完后统一追加到最后（还去了重），表现为「翻译模式下
             // 角色永远最后才发表情包」。
-            // 翻译标签之外的普通文本段：splitResponse 按出现顺序拆出文字 / 表情逐条发
+            // 翻译标签之外的普通文本段：splitResponse 按出现顺序拆出文字 / 表情 / 图片逐条发
             const renderPlainSegment = async (segment: string): Promise<void> => {
-                for (const part of ChatParser.splitResponse(segment)) {
+                // 先把图片标签按出现顺序切成段，再把文字段交给 splitResponse 拆表情——
+                // 这样「文字 → 图 → 文字」的先后顺序跟模型写的一致。
+                for (const imagePart of splitImageTags(segment)) {
+                    if (imagePart.type !== 'text') {
+                        if (imageChatEnabled) await replyStep(async () => sendImageBubble(imagePart.type as 'image' | 'draw', imagePart.content));
+                        continue;
+                    }
+                for (const part of ChatParser.splitResponse(imagePart.content)) {
                     if (part.type === 'emoji') {
                         await replyStep(async () => sendEmojiBubble(part.content));
                         continue;
@@ -919,6 +979,7 @@ export async function applyAssistantPostProcessing(
                         globalMsgIndex++;
                     }
                 }
+                }
             };
             const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
             let lastIndex = 0;
@@ -928,10 +989,20 @@ export async function applyAssistantPostProcessing(
                 const textBefore = content.slice(lastIndex, tagMatch.index).trim();
                 if (textBefore) await replyStep(async () => renderPlainSegment(textBefore));
 
-                // 混进 <原文>/<译文> 里的表情标签剥出来，紧跟这条双语气泡之后发
+                // 混进 <原文>/<译文> 里的表情 / 图片标签剥出来，紧跟这条双语气泡之后发
                 const inlineEmojis: string[] = [];
-                const stripInlineEmoji = (s: string): string =>
-                    s.replace(/\[\[SEND_EMOJI:\s*(.*?)\]\]/g, (_m, n) => { inlineEmojis.push(String(n).trim()); return ''; });
+                const inlineImages: Array<{ type: 'image' | 'draw'; content: string }> = [];
+                const stripInlineEmoji = (s: string): string => {
+                    const withoutImages = s.replace(/\[\[(IMAGE|DRAW)[:：]\s*([\s\S]*?)\]\]/gi, (_m, kind, value) => {
+                        const cleaned = String(value).trim();
+                        if (cleaned) {
+                            if (String(kind).toUpperCase() === 'DRAW') inlineImages.push({ type: 'draw', content: cleaned });
+                            else if (/^https?:\/\//i.test(cleaned)) inlineImages.push({ type: 'image', content: cleaned });
+                        }
+                        return '';
+                    });
+                    return withoutImages.replace(/\[\[SEND_EMOJI:\s*(.*?)\]\]/g, (_m, n) => { inlineEmojis.push(String(n).trim()); return ''; });
+                };
                 const originalText = ChatParser.sanitize(stripInlineEmoji(tagMatch[1]).trim());
                 const translatedText = ChatParser.sanitize(stripInlineEmoji(tagMatch[2]).trim());
                 if (originalText || translatedText) {
@@ -945,6 +1016,9 @@ export async function applyAssistantPostProcessing(
                     globalMsgIndex++;
                 }
                 for (const name of inlineEmojis) await replyStep(async () => sendEmojiBubble(name));
+                if (imageChatEnabled) {
+                    for (const img of inlineImages) await replyStep(async () => sendImageBubble(img.type, img.content));
+                }
 
                 lastIndex = tagMatch.index + tagMatch[0].length;
             }
@@ -964,12 +1038,20 @@ export async function applyAssistantPostProcessing(
                 if (part.type === 'emoji') {
                     await replyStep(async () => sendEmojiBubble(part.content));
                 } else {
-                    const rawBlocks = part.content.split(/^\s*---\s*$/m).filter(b => b.trim());
+                    // 这一段文字里可能夹着 [[IMAGE:]] / [[DRAW:]]。按出现顺序先发图再发文字，
+                    // 图片条目不参与文字 chunk 的编号与引用挂载。
+                    const imageParts = splitImageTags(part.content);
+                    for (const imagePart of imageParts) {
+                        if (imagePart.type !== 'text') {
+                            if (imageChatEnabled) await replyStep(async () => sendImageBubble(imagePart.type as 'image' | 'draw', imagePart.content));
+                            continue;
+                        }
+                    const rawBlocks = imagePart.content.split(/^\s*---\s*$/m).filter(b => b.trim());
                     const allChunks: string[] = [];
                     for (const block of rawBlocks) {
                         allChunks.push(...ChatParser.chunkText(block.trim()));
                     }
-                    if (allChunks.length === 0 && part.content.trim()) allChunks.push(part.content.trim());
+                    if (allChunks.length === 0 && imagePart.content.trim()) allChunks.push(imagePart.content.trim());
 
                     for (let i = 0; i < allChunks.length; i++) {
                         let chunk = allChunks[i];
@@ -996,6 +1078,7 @@ export async function applyAssistantPostProcessing(
                             }
                         }
                         pendingReplyTarget = chunkSaved ? undefined : replyData;
+                    }
                     }
                 }
             }

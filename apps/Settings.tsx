@@ -10,6 +10,8 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useOS } from '../context/OSContext';
 import { Capacitor } from '@capacitor/core';
 import { extractContent, safeResponseJson } from '../utils/safeApi';
+import { generateImage } from '../utils/imageStudio';
+import { getLocalDateKey } from '../utils/localDate';
 import { extractModelIds, normalizeModelIds } from '../utils/modelList';
 import { shareOrDownloadBlob } from '../utils/shareExport';
 import { bucketRetryCount, isAnalyticsConfigured, isAnalyticsEnabled, setAnalyticsEnabled, trackEvent } from '../utils/analytics';
@@ -510,6 +512,14 @@ const Settings: React.FC = () => {
   const [visionStatusMsg, setVisionStatusMsg] = useState('');
   const [testingVisionApi, setTestingVisionApi] = useState(false);
   const [visionTestResult, setVisionTestResult] = useState<string | null>(null);
+  // 生图 API（角色发图 [[DRAW:]]）
+  const [localImageGenEnabled, setLocalImageGenEnabled] = useState(apiConfig.imageGen?.enabled === true);
+  const [localImageGenUrl, setLocalImageGenUrl] = useState(apiConfig.imageGen?.baseUrl || '');
+  const [localImageGenKey, setLocalImageGenKey] = useState(apiConfig.imageGen?.apiKey || '');
+  const [localImageGenModel, setLocalImageGenModel] = useState(apiConfig.imageGen?.model || '');
+  const [localImageGenSize, setLocalImageGenSize] = useState(apiConfig.imageGen?.size || '');
+  const [testingImageGen, setTestingImageGen] = useState(false);
+  const [imageGenStatusMsg, setImageGenStatusMsg] = useState('');
   const [localMiniMaxKey, setLocalMiniMaxKey] = useState(apiConfig.minimaxApiKey || '');
   const [localMiniMaxGroupId, setLocalMiniMaxGroupId] = useState(apiConfig.minimaxGroupId || '');
   const [localMiniMaxRegion, setLocalMiniMaxRegion] = useState<'domestic' | 'overseas'>(
@@ -1200,8 +1210,7 @@ const Settings: React.FC = () => {
     handleSaveApi(model);
   };
 
-  const handleSaveVisionApi = (enabled = localVisionEnabled) => {
-    const nextVisionApi = {
+  const handleSaveVisionApi = (enabled = localVisionEnabled) => {    const nextVisionApi = {
       enabled,
       baseUrl: normalizeApiBaseUrl(localVisionUrl),
       apiKey: normalizeApiCredential(localVisionKey),
@@ -1235,8 +1244,7 @@ const Settings: React.FC = () => {
     }
   };
 
-  const loadVisionApiPreset = (preset: typeof apiPresets[0]) => {
-    const next = visionApiConfigFromPreset(preset);
+  const loadVisionApiPreset = (preset: typeof apiPresets[0]) => {    const next = visionApiConfigFromPreset(preset);
     setSelectedVisionPresetId(preset.id);
     setLocalVisionEnabled(true);
     setLocalVisionUrl(next.baseUrl);
@@ -1246,6 +1254,62 @@ const Settings: React.FC = () => {
     setVisionStatusMsg(`已载入预设：${preset.name}`);
     setTimeout(() => setVisionStatusMsg(''), 2200);
     addToast(`已把「${preset.name}」填入识图 API；保存后生效`, 'info');
+  };
+
+  /**
+   * 保存生图配置，并真的画一张测试图——生图接口「配置填完了但模型名不对 / 中转不支持」
+   * 的情况太多，光存不测等于没测。测试图会进相册，用户可以自己删。
+   */
+  const handleSaveImageGen = async () => {
+    const enabled = localImageGenEnabled;
+    const next = {
+      enabled,
+      baseUrl: normalizeApiBaseUrl(localImageGenUrl),
+      apiKey: normalizeApiCredential(localImageGenKey),
+      model: normalizeApiModel(localImageGenModel),
+      ...(localImageGenSize ? { size: localImageGenSize } : {}),
+    };
+    if (enabled && (!next.baseUrl || !next.apiKey || !next.model)) {
+      addToast('开启生图 API 前，请填写完整的 URL、Key 和 Model', 'error');
+      return;
+    }
+    setLocalImageGenUrl(next.baseUrl);
+    setLocalImageGenKey(next.apiKey);
+    setLocalImageGenModel(next.model);
+
+    if (!enabled) {
+      updateApiConfig({ imageGen: { ...next, enabled: false } });
+      setImageGenStatusMsg('已关闭，角色不会再画图');
+      setTimeout(() => setImageGenStatusMsg(''), 2200);
+      return;
+    }
+
+    setTestingImageGen(true);
+    setImageGenStatusMsg('');
+    try {
+      const result = await generateImage('一只坐在窗台上的橘猫，水彩画风', next);
+      if ('ref' in result) {
+        updateApiConfig({ imageGen: next });
+        await DB.saveGalleryImage({
+          id: `img-${Date.now()}-${Math.random()}`,
+          charId: characters[0]?.id || 'system',
+          url: result.ref,
+          timestamp: Date.now(),
+          savedDate: getLocalDateKey(),
+          chatContext: ['生图 API 测试图'],
+        });
+        setImageGenStatusMsg('✅ 生图成功，已接入；测试图存进相册了');
+        trackEvent('测试生图 API', { result: '成功' });
+      } else {
+        setImageGenStatusMsg(`❌ 生图失败：${result.error}`);
+        trackEvent('测试生图 API', { result: '失败' });
+      }
+    } catch (error: any) {
+      setImageGenStatusMsg(`❌ 生图失败：${error?.message || '未知错误'}`);
+      trackEvent('测试生图 API', { result: '失败' });
+    } finally {
+      setTestingImageGen(false);
+    }
   };
 
   const fetchVisionModels = async () => {
@@ -2790,7 +2854,125 @@ const Settings: React.FC = () => {
             </div>
         </SettingsSection>
 
-        {/* API 调用记录入口 — 点开看最近 5 天各 App / 角色 / 用途的调用明细 */}
+        {/* 生图 API：角色写 [[DRAW: 描述]] 时用它画图；没配角色就画不了，只会找网图。 */}
+        <SettingsSection
+            title="生图 API"
+            badge={
+                <span className={`text-[9px] font-bold px-2 py-1 rounded-full ${
+                    apiConfig.imageGen?.enabled
+                        ? 'bg-pink-100 text-pink-600'
+                        : 'bg-slate-100 text-slate-400'
+                }`}>
+                    {apiConfig.imageGen?.enabled ? '已接入' : '未接入'}
+                </span>
+            }
+            icon={
+                <div className="p-2 bg-pink-100/60 rounded-xl text-pink-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 19.5h16.5M7.5 7.5h.008v.008H7.5V7.5Z" />
+                    </svg>
+                </div>
+            }
+        >
+            <div className="space-y-4">
+                <div className="rounded-2xl border border-pink-100 bg-pink-50/60 p-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-bold text-slate-600">允许角色画图</div>
+                            <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                填 OpenAI 兼容的 <span className="font-mono">/images/generations</span> 中转。
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={localImageGenEnabled}
+                            onClick={() => setLocalImageGenEnabled(v => !v)}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${localImageGenEnabled ? 'bg-pink-500' : 'bg-slate-200'}`}
+                        >
+                            <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${localImageGenEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                        </button>
+                    </div>
+                </div>
+
+                <p className="text-[10px] text-slate-400 leading-relaxed px-1">
+                    开启后，角色在聊天里觉得合适时可以画一张图发给你（等十几秒到一分钟）。
+                    关掉也能用：只要接入了会返回图片地址的 MCP 搜索工具，角色照样能贴网图。
+                    图片会下载到本机并进相册，不会因为图床失效而丢图。
+                </p>
+
+                <div className={`space-y-3 transition-opacity ${localImageGenEnabled ? 'opacity-100' : 'opacity-50'}`}>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
+                        <input
+                            type="text"
+                            value={localImageGenUrl}
+                            onChange={event => setLocalImageGenUrl(event.target.value)}
+                            disabled={!localImageGenEnabled}
+                            placeholder="https://.../v1"
+                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Key</label>
+                        <input
+                            type="password"
+                            value={localImageGenKey}
+                            onChange={event => setLocalImageGenKey(event.target.value)}
+                            disabled={!localImageGenEnabled}
+                            placeholder="sk-..."
+                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Model</label>
+                        <input
+                            type="text"
+                            value={localImageGenModel}
+                            onChange={event => setLocalImageGenModel(event.target.value)}
+                            disabled={!localImageGenEnabled}
+                            placeholder="gpt-image-1 / dall-e-3 / 你中转支持的模型名"
+                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">图片尺寸</label>
+                        <select
+                            value={localImageGenSize}
+                            onChange={event => setLocalImageGenSize(event.target.value)}
+                            disabled={!localImageGenEnabled}
+                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed"
+                        >
+                            <option value="">默认（1024×1024）</option>
+                            <option value="1024x1024">方形 1024×1024</option>
+                            <option value="1024x1536">竖图 1024×1536</option>
+                            <option value="1536x1024">横图 1536×1024</option>
+                        </select>
+                        <p className="text-[9px] text-slate-300 mt-1 px-1">部分中转只认 1024×1024；报错就换回默认。</p>
+                    </div>
+                </div>
+
+                <div>
+                    <button
+                        type="button"
+                        onClick={handleSaveImageGen}
+                        disabled={testingImageGen}
+                        className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-pink-500/20 bg-pink-500 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                        {testingImageGen ? '正在画一张测试图…' : '保存生图 API'}
+                    </button>
+                </div>
+                {imageGenStatusMsg && (
+                    <div className={`text-xs px-3 py-2 rounded-xl leading-relaxed ${
+                        imageGenStatusMsg.startsWith('✅') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
+                    }`}>
+                        {imageGenStatusMsg}
+                    </div>
+                )}
+                <p className="text-[9px] text-slate-300 px-1">保存时会真的画一张测试图确认能出图；这张图会进相册，可以删掉。每测一次消耗一次生图额度。</p>
+            </div>
+        </SettingsSection>
+
         <button
             type="button"
             onClick={() => setShowApiCallLog(true)}
