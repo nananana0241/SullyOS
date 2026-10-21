@@ -273,6 +273,19 @@ export interface VisionApiConfig {
   model: string;
 }
 
+/**
+ * 生图中转（OpenAI 兼容 POST /images/generations）。
+ * 角色写 `[[DRAW: 描述]]` 时用它画图；没配就不启用，角色也不会画。
+ */
+export interface ImageGenApiConfig {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  /** 可选，默认按 1024x1024。只能填 OpenAI 那几种（1024x1024 / 1024x1536 / 1536x1024）。 */
+  size?: string;
+}
+
 /** A complete dialogue endpoint, separate from TTS/vision configuration. */
 export type DialogueApiConfig = Pick<APIConfig, 'baseUrl' | 'apiKey' | 'model' | 'stream' | 'temperature'>;
 
@@ -281,6 +294,8 @@ export interface APIConfig {
   apiKey: string;
   // 可选识图中转：给不支持 image_url 的主模型补视觉能力。
   visionApi?: VisionApiConfig;
+  // 可选生图中转：角色想画图（[[DRAW:]]）时调用。
+  imageGen?: ImageGenApiConfig;
   minimaxApiKey?: string;
   minimaxGroupId?: string;
   // 'domestic' → https://api.minimaxi.com (国内站)

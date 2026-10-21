@@ -701,6 +701,10 @@ const processInboxMessageWithPostProcessing = async (
         model: apiConfig.model,
       },
     },
+    // 主动消息路径：worker 生成的正文里也可能带 [[DRAW:]] / [[IMAGE:]]。
+    // 生图配置存在本机，worker 拿不到，所以这条路上画图只能靠前端这里补。
+    imageGen: apiConfig.imageGen,
+    imageChatEnabled: true,
     hooks: {
       // setMessages 在 React 外面跑, 没法直接 setState, 只 fire 一次 progress 事件让
       // OSContext 推 lastMsgTimestamp, 然后 Chat.tsx 自然 reloadMessages 重新读库。

@@ -923,6 +923,7 @@ export const useChatAI = ({
                 htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
                 thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
                 visionApiConfig: apiConfig.visionApi,
+                imageGen: apiConfig.imageGen,
                 mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                 luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 luckinChat: luckinChatOn ? luckinChatRef?.current : undefined,
@@ -2084,6 +2085,8 @@ export const useChatAI = ({
                     headers,
                     effectiveApi,
                 },
+                imageGen: apiConfig.imageGen,
+                imageChatEnabled: payload.flags.imageChatActive,
                 hooks: {
                     setMessages: setMessagesWithPreviewHandover,
                     addToast,
