@@ -126,10 +126,56 @@ export const MCP_RESULT_MAX_CHARS = 20000;
 export const formatMcpToolResult = (data: any): string => {
     let s: string;
     try { s = typeof data === 'string' ? data : JSON.stringify(data); } catch { s = String(data); }
-    return s.length > MCP_RESULT_MAX_CHARS
+    const body = s.length > MCP_RESULT_MAX_CHARS
         ? `${s.slice(0, MCP_RESULT_MAX_CHARS)}…[结果过长已截断, 全文共 ${s.length} 字符]`
         : s;
+    const images = extractImageUrls(data);
+    if (!images.length) return body;
+    // 图片地址往往埋在 results[i].thumbnail.src 这种深层字段里，模型扫一大段 JSON 时
+    // 基本抓不到。单独把能直接发给用户的图片地址挑出来放最前面，它才知道有图可用。
+    return `【结果里的图片地址（可直接用 [[IMAGE: 地址]] 发出去）】\n${images.map(u => `- ${u}`).join('\n')}\n\n${body}`;
 };
+
+const IMAGE_URL_EXT_RE = /\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i;
+export const MCP_MAX_SUGGESTED_IMAGES = 8;
+
+/**
+ * 从任意形状的 MCP 结果里捞出图片地址（深度受限，避免病态大对象）。
+ *
+ * 判断标准刻意宽松：带图片扩展名的 http 地址，或字段名明显是图片位
+ * （thumbnail.src / image_url / images[]）。宁可多列几个，也比模型不知道有图强——
+ * 真正下载时 characterImage 还会再校验一次是不是图片。
+ */
+export function extractImageUrls(data: any, limit = MCP_MAX_SUGGESTED_IMAGES): string[] {
+    const found: string[] = [];
+    const seen = new Set<string>();
+    const push = (value: unknown) => {
+        if (typeof value !== 'string' || found.length >= limit) return;
+        const raw = value.trim();
+        if (!/^https?:\/\//i.test(raw)) return;
+        if (seen.has(raw)) return;
+        if (!IMAGE_URL_EXT_RE.test(raw)) return;
+        seen.add(raw);
+        found.push(raw);
+    };
+    const walk = (node: any, depth: number) => {
+        if (found.length >= limit || depth > 5 || node == null) return;
+        if (typeof node === 'string') { push(node); return; }
+        if (Array.isArray(node)) { for (const item of node) walk(item, depth + 1); return; }
+        if (typeof node !== 'object') return;
+        for (const [key, value] of Object.entries(node)) {
+            if (found.length >= limit) return;
+            // 图片字段优先：常见的 thumbnail / image_url / images 直接认
+            if (typeof value === 'string' && /^(?:thumbnail|image|image_url|img|src|thumbnail_url|original|url)$/i.test(key)) {
+                if (IMAGE_URL_EXT_RE.test(value)) { push(value); continue; }
+                // thumbnail 常是 {src: "..."}，交给下层 walk 处理
+            }
+            walk(value, depth + 1);
+        }
+    };
+    walk(data, 0);
+    return found;
+}
 
 // ========== 掉格式容错: 正文里的"假工具调用" ==========
 //

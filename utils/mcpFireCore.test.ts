@@ -454,3 +454,33 @@ it('停止会取消正在执行的 MCP 请求，且取消不会变成工具失�
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     vi.unstubAllGlobals();
 });
+
+describe('extractImageUrls / formatMcpToolResult image hints', () => {
+    it('finds image urls in a Tavily-style result and lists them first', async () => {
+        const { extractImageUrls, formatMcpToolResult } = await import('./mcpFireCore');
+        const data = {
+            query: 'sunset',
+            images: ['https://img.example.com/a.jpg', { url: 'https://img.example.com/b.png?w=400' }],
+            results: [{ title: 'page', url: 'https://example.com/article', thumbnail: { src: 'https://cdn.example.com/c.webp' } }],
+        };
+        expect(extractImageUrls(data)).toEqual([
+            'https://img.example.com/a.jpg',
+            'https://img.example.com/b.png?w=400',
+            'https://cdn.example.com/c.webp',
+        ]);
+        const text = formatMcpToolResult(data);
+        expect(text.startsWith('【结果里的图片地址')).toBe(true);
+        expect(text).not.toContain('- https://example.com/article');
+    });
+
+    it('leaves results without images untouched', async () => {
+        const { formatMcpToolResult } = await import('./mcpFireCore');
+        expect(formatMcpToolResult({ results: [{ url: 'https://example.com/a' }] })).toBe('{"results":[{"url":"https://example.com/a"}]}');
+    });
+
+    it('caps the number of suggested images', async () => {
+        const { extractImageUrls, MCP_MAX_SUGGESTED_IMAGES } = await import('./mcpFireCore');
+        const many = Array.from({ length: 30 }, (_, i) => `https://x.com/${i}.jpg`);
+        expect(extractImageUrls(many)).toHaveLength(MCP_MAX_SUGGESTED_IMAGES);
+    });
+});
