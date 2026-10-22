@@ -75,6 +75,18 @@ describe('characterImage / downloadImageToRef', () => {
         expect('error' in result).toBe(true);
     });
 
+    it('falls back to the image proxy when the direct fetch is blocked by CORS', async () => {
+        const calls: string[] = [];
+        const fetchImpl = vi.fn().mockImplementation(async (input: string) => {
+            calls.push(input);
+            if (input.startsWith('https://i.pinimg.com/')) throw new TypeError('Failed to fetch');
+            return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/jpeg' } });
+        });
+        await downloadImageToRef('https://i.pinimg.com/736x/a.jpg', fetchImpl as any).catch(() => undefined);
+        expect(calls[0]).toBe('https://i.pinimg.com/736x/a.jpg');
+        expect(calls[1]).toBe(`https://wsrv.nl/?url=${encodeURIComponent('https://i.pinimg.com/736x/a.jpg')}`);
+    });
+
     it('returns an error on HTTP failure', async () => {
         const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 404 }));
         const result = await downloadImageToRef('https://example.com/missing.jpg', fetchImpl as any);
