@@ -91,6 +91,9 @@ export const stripImageTags = (content: string): string =>
 
 export type DownloadResult = { ref: string } | { error: string };
 
+/** 直连被 CORS 拦下时的回退：wsrv.nl 会原样返回图片并带 access-control-allow-origin: *。 */
+const IMAGE_PROXY_BASE = 'https://wsrv.nl/?url=';
+
 /**
  * 下载一张网络图片并落成本机令牌。
  *
@@ -102,12 +105,14 @@ export async function downloadImageToRef(
     fetchImpl: typeof fetch = fetch,
 ): Promise<DownloadResult> {
     let lastError = '下载失败';
-    // 有些图床会先回一段跳转/防盗链页，follow 一次即可，不无限重试。
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // 先直连；浏览器因为图床没带 CORS 头而拒绝读取时（Pinterest 等，表现为 TypeError: Failed to fetch），
+    // 再走公共图片中转取一次。中转只会看到这张图的公开地址，看不到聊天内容。
+    const candidates = [url, `${IMAGE_PROXY_BASE}${encodeURIComponent(url)}`];
+    for (const candidate of candidates) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
         try {
-            const res = await fetchImpl(url, {
+            const res = await fetchImpl(candidate, {
                 signal: controller.signal,
                 // 不带 referer，避免部分图床按来源拦截
                 redirect: 'follow',
