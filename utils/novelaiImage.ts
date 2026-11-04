@@ -19,14 +19,17 @@ import { putImageBlobDeduped, dataUrlToBlob } from './blobRef';
 export const NOVELAI_OFFICIAL_BASE = 'https://image.novelai.net';
 
 /** 官方支持的模型。用「拉取模型」拉不到 NAI 的图模型（它没有 /models），这里是内置表。 */
-export const NOVELAI_MODELS: Array<{ id: string; label: string }> = [
-    { id: 'nai-diffusion-4-5-full', label: 'V4.5 Full — 完整版' },
-    { id: 'nai-diffusion-4-5-curated', label: 'V4.5 Curated — 精选版' },
-    { id: 'nai-diffusion-4-full', label: 'V4 Full — 完整版' },
-    { id: 'nai-diffusion-4-curated', label: 'V4 Curated — 精选版' },
-    { id: 'nai-diffusion-3', label: 'V3 — 动漫' },
-    { id: 'nai-diffusion-3-furry', label: 'V3 Furry — 兽人' },
+export const NOVELAI_MODELS: Array<{ id: string; label: string; hint: string }> = [
+    { id: 'nai-diffusion-4-5-full', label: 'V4.5 Full — 完整版', hint: '全量训练集，成年内容要选这个' },
+    { id: 'nai-diffusion-4-5-curated', label: 'V4.5 Curated — 精选版', hint: '训练集更干净，Quality Tags 会自动加 rating:general' },
+    { id: 'nai-diffusion-4-full', label: 'V4 Full — 完整版', hint: '全量训练集' },
+    { id: 'nai-diffusion-4-curated', label: 'V4 Curated — 精选版', hint: '训练集更干净，Quality Tags 会自动加 rating:general' },
+    { id: 'nai-diffusion-3', label: 'V3 — 动漫', hint: '老模型' },
+    { id: 'nai-diffusion-3-furry', label: 'V3 Furry — 兽人', hint: '老模型' },
 ];
+
+/** 内容是 Curated（精选版）吗——它的 Quality Tags 会追加 rating:general。 */
+export const isCuratedNovelAiModel = (modelId: string): boolean => /curated/i.test(modelId || '');
 
 /** 采样器。k_euler_ancestral 是官方默认。 */
 export const NOVELAI_SAMPLERS: Array<{ id: string; label: string }> = [
@@ -48,11 +51,26 @@ export const NOVELAI_NOISE_SCHEDULES: Array<{ id: string; label: string }> = [
 ];
 
 /** 负面提示词预设。0 最狠，2 不加负面词。 */
-export const NOVELAI_UC_PRESETS: Array<{ id: number; label: string }> = [
+export const NOVELAI_UC_PRESETS: Array<{ id: number; label: string; hint?: string }> = [
     { id: 0, label: 'Preset 0 — Heavy（最狠）' },
     { id: 1, label: 'Preset 1 — Light（轻）' },
-    { id: 2, label: 'Preset 2 — None（不加）' },
+    { id: 2, label: 'Preset 2 — None（不加负面词）', hint: '不想被压内容时选这个' },
     { id: 3, label: 'Preset 3 — Furry（兽人向）' },
+];
+
+/**
+ * 评级标签。V4/V4.5 用 danbooru 那套 rating，写进正面提示词才有效。
+ *
+ * 注意：Curated 模型的 Quality Tags 会自己在末尾追加 `rating:general`
+ * （官方文档 Add Quality Tags 一节），所以选了 Curated 又开着 Quality Tags 时，
+ * 这里给的 rating 会被前者的 general 顶掉——要出成年内容必须用 Full 模型。
+ */
+export const NOVELAI_RATINGS: Array<{ id: string; label: string; hint: string }> = [
+    { id: '', label: '不加评级（默认）', hint: '模型自己判断' },
+    { id: 'rating:general', label: '全年龄 (rating:general)', hint: '明确压制' },
+    { id: 'rating:sensitive', label: '轻度 (rating:sensitive)', hint: '擦边' },
+    { id: 'rating:questionable', label: '受限 (rating:questionable)', hint: '部分裸露' },
+    { id: 'rating:explicit', label: '成人 (rating:explicit)', hint: '需要 Full 模型 + 负面向预设' },
 ];
 
 /** 常用尺寸。NAI 要求边长是 64 的倍数。 */
@@ -87,6 +105,7 @@ export const DEFAULT_NOVELAI_CONFIG: NovelAiImageConfig = {
     // NAI 里重复 tag 会叠加权重，很容易把画面推过头。
     positivePreset: '',
     negativePreset: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, jpeg artifacts, signature, watermark, username, blurry',
+    rating: '',
     vibeEnabled: false,
     vibeRefs: [],
 };
@@ -107,6 +126,8 @@ export function normalizeNovelAiConfig(partial?: Partial<NovelAiImageConfig> | n
     merged.cfgRescale = clampNum(merged.cfgRescale, 0, 1, 0);
     merged.ucStrength = clampNum(merged.ucStrength, 0, 1, 1);
     merged.vibeRefs = Array.isArray(merged.vibeRefs) ? merged.vibeRefs : [];
+    // 只认白名单里的评级，别让手输的乱七八糟字符串直接进提示词。
+    merged.rating = NOVELAI_RATINGS.some(r => r.id === merged.rating) ? (merged.rating || '') : '';
     merged.connection = merged.connection === 'custom' ? 'custom' : 'official';
     merged.rolePromptMode = merged.rolePromptMode === 'separate' || merged.rolePromptMode === 'merged'
         ? merged.rolePromptMode
@@ -173,6 +194,9 @@ export function buildNovelAiRequest(
     const style = (config.stylePrompt || '').trim();
     const positivePreset = (novelai.positivePreset || '').trim();
     const negativePreset = (novelai.negativePreset || '').trim();
+    // 评级标签放在最后：NAI 的 tag 越靠后权重越强，而且 Curated 模型的
+    // Quality Tags 会在末尾追加 rating:general，我们这条必须排在它前面才不会被顶掉。
+    const rating = (novelai.rating || '').trim();
 
     // 分角色：官方端点默认走 char_captions；自定义端点（ComfyUI 等）不认这套写法，
     // 角色外观会整段丢失，所以 auto 模式下非官方直接合并进主提示词。
@@ -185,6 +209,7 @@ export function buildNovelAiRequest(
         if (partner) promptParts.push(partner);
         if (style) promptParts.push(style);
     }
+    if (rating) promptParts.push(rating);
     const baseCaption = promptParts.filter(Boolean).join(', ').slice(0, 2000);
 
     const charCaptions: Array<{ char_caption: string; centers: Array<{ x: number; y: number }> }> = [];

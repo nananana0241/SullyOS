@@ -5,6 +5,7 @@ import {
     NOVELAI_OFFICIAL_BASE,
     buildNovelAiRequest,
     createNovelAiVibeRef,
+    isCuratedNovelAiModel,
     isNovelAiConfigReady,
     normalizeNovelAiConfig,
 } from './novelaiImage';
@@ -144,5 +145,33 @@ describe('novelaiImage / request body', () => {
     it('keeps a fixed seed', () => {
         const { body } = buildNovelAiRequest('1girl', makeConfig({}, { seed: 123456 }));
         expect((body.parameters as any).seed).toBe(123456);
+    });
+});
+
+describe('novelaiImage / rating tag', () => {
+    // 官方文档：V4.5 Curated 的 Quality Tags 会在提示词末尾追加 rating:general。
+    // 用户选了 Curated 又想要成年内容时，唯一的办法是关掉 Quality Tags。
+    // 这条断言的是"我们确实把 rating 写进了正面提示词"，而不是悄悄丢掉。
+    it('appends the chosen rating to the positive prompt', () => {
+        const { body } = buildNovelAiRequest('1girl, portrait', makeConfig({}, { rating: 'rating:explicit' }));
+        expect(String(body.input)).toContain('rating:explicit');
+    });
+
+    // 空串 = 不加，别往提示词里塞一个空的 rating。
+    it('adds nothing when rating is empty', () => {
+        const { body } = buildNovelAiRequest('1girl', makeConfig({}, { rating: '' }));
+        expect(String(body.input)).not.toContain('rating:');
+    });
+
+    // 手输/历史配置里可能混进别的字符串，只放行白名单里的四个评级。
+    it('rejects unknown rating values', () => {
+        const normalized = normalizeNovelAiConfig({ rating: 'nonsense' });
+        expect(normalized.rating).toBe('');
+    });
+
+    // Curated 和 Full 的差别是用户踩过的最大的坑，模型名判定必须准。
+    it('detects curated models', () => {
+        expect(isCuratedNovelAiModel('nai-diffusion-4-5-curated')).toBe(true);
+        expect(isCuratedNovelAiModel('nai-diffusion-4-5-full')).toBe(false);
     });
 });

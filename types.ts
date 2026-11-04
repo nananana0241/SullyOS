@@ -330,6 +330,11 @@ export interface NovelAiImageConfig {
   positivePreset: string;
   /** 负面预设词。 */
   negativePreset: string;
+  /**
+   * 评级标签（`rating:general` / `sensitive` / `questionable` / `explicit`），
+   * 写进正面提示词。空串 = 不加。
+   */
+  rating?: string;
   vibeEnabled: boolean;
   vibeRefs: NovelAiVibeRef[];
 }

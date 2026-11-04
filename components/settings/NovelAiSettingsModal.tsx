@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ImageGenApiConfig, NovelAiImageConfig, NovelAiVibeRef } from '../../types';
 import {
     DEFAULT_NOVELAI_CONFIG,
+    NOVELAI_RATINGS,
     NOVELAI_SAMPLERS,
     NOVELAI_NOISE_SCHEDULES,
     NOVELAI_SIZES,
@@ -291,6 +292,21 @@ export const NovelAiSettingsModal: React.FC<Props> = ({ open, config, value, onC
                                 抽一个
                             </button>
                         </div>
+                    </Field>
+
+                    <Field
+                        label="评级 (Rating)"
+                        hint="写进正面提示词。要出成人内容必须用 Full 模型——Curated 的 Quality Tags 会自动追加 rating:general，把这里的选择顶掉。"
+                    >
+                        <select
+                            value={draft.rating || ''}
+                            onChange={e => patch({ rating: e.target.value })}
+                            className={inputClass + ' appearance-none'}
+                        >
+                            {NOVELAI_RATINGS.map(r => (
+                                <option key={r.id || 'none'} value={r.id}>{r.label}</option>
+                            ))}
+                        </select>
                     </Field>
 
                     <Field label="负面提示词预设 (UC Preset)">
