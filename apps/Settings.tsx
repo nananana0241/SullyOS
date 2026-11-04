@@ -16,6 +16,7 @@ import { extractModelIds, normalizeModelIds } from '../utils/modelList';
 import {
     NOVELAI_MODELS,
     NOVELAI_OFFICIAL_BASE,
+    isCuratedNovelAiModel,
     normalizeNovelAiConfig,
 } from '../utils/novelaiImage';
 import NovelAiSettingsModal from '../components/settings/NovelAiSettingsModal';
@@ -3102,6 +3103,13 @@ const Settings: React.FC = () => {
                                     )}
                                     {NOVELAI_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
                                 </select>
+                                {/* Curated 的 Quality Tags 会在提示词末尾追加 rating:general，
+                                    选它 + 开着品质词，成年内容就被压掉了。这条必须写在界面上。 */}
+                                {isCuratedNovelAiModel(localImageGenModel) && localNovelAiConfig.qualityTags && (
+                                    <p className="text-[9px] text-amber-600 mt-1 px-1 leading-relaxed">
+                                        选了 Curated（精选版）又开着「Quality Tags」时，官方会自动在提示词末尾加 <span className="font-mono">rating:general</span>，把成年内容压掉。要出这类图请换 V4.5 Full，或在「生成设定」里关掉 Quality Tags。
+                                    </p>
+                                )}
                                 <button
                                     type="button"
                                     onClick={handleFetchNovelAiModels}
