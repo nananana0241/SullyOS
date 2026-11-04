@@ -1,6 +1,7 @@
 import type { APIConfig, ImageGenApiConfig } from '../types';
 import { safeFetchJson } from './safeApi';
 import { putImageBlobDeduped, dataUrlToBlob } from './blobRef';
+import { generateNovelAiImage } from './novelaiImage';
 
 /**
  * 生图中转（OpenAI 兼容 `POST /images/generations`）。
@@ -9,11 +10,16 @@ import { putImageBlobDeduped, dataUrlToBlob } from './blobRef';
  * "对话一个 Key、生图另一个 Key"。留空则不启用，角色也就不会写 [[DRAW:]]。
  */
 
-export const isImageGenReady = (config?: ImageGenApiConfig | null): config is ImageGenApiConfig =>
-    config?.enabled === true
-    && !!config.baseUrl?.trim()
-    && !!config.apiKey?.trim()
-    && !!config.model?.trim();
+export const isImageGenReady = (config?: ImageGenApiConfig | null): config is ImageGenApiConfig => {
+    if (config?.enabled !== true) return false;
+    if (!config.apiKey?.trim() || !config.model?.trim()) return false;
+    // NovelAI 官方直连不需要填地址（内置 https://image.novelai.net）；
+    // 只有选了自定义中转才要求 URL。
+    if (config.provider === 'novelai') {
+        return config.novelai?.connection === 'custom' ? !!config.baseUrl?.trim() : true;
+    }
+    return !!config.baseUrl?.trim();
+};
 
 /** 生图通常比对话慢很多，给足时间；超时就报错让角色如实说，不要吊着。 */
 const IMAGE_GEN_TIMEOUT_MS = 180_000;
@@ -41,8 +47,19 @@ const SIZE_FOR_ASPECT: Record<string, string> = {
 export async function generateImage(
     prompt: string,
     config: ImageGenApiConfig,
-    options?: { size?: string; fetchImpl?: typeof fetch; signal?: AbortSignal },
+    options?: { size?: string; fetchImpl?: typeof fetch; signal?: AbortSignal; appearance?: string },
 ): Promise<DrawResult> {
+    // NovelAI 官方是另一套协议，参数和返回值都不同，走自己的实现。
+    // 这里只做分派：调用方（[[DRAW:]] 后处理 / 设置页测试按钮）不用关心是哪家。
+    if (config?.provider === 'novelai') {
+        if (config.enabled !== true) return { error: '生图 API 没配置完整' };
+        const result = await generateNovelAiImage(prompt, config, {
+            appearance: options?.appearance,
+            size: options?.size,
+            signal: options?.signal,
+        });
+        return 'ref' in result ? { ref: result.ref } : { error: result.error };
+    }
     if (!isImageGenReady(config)) return { error: '生图 API 没配置完整' };
     const cleanPrompt = (prompt || '').trim().slice(0, 2000);
     if (!cleanPrompt) return { error: '缺少画面描述' };

@@ -861,7 +861,11 @@ export async function applyAssistantPostProcessing(
                 } else {
                     // 画一张要几十秒，界面上必须看得见，否则用户以为消息卡死了
                     hooks.setImageStatus?.(`正在画：${value.slice(0, 24)}…`);
-                    const result = await replyStep(async () => generateImage(value, imageGen!));
+                    // NovelAI 分角色模式要把角色外观单独绑进 char_captions，才画得像本人；
+                    // OpenAI 中转会忽略这个字段。
+                    const result = await replyStep(async () => generateImage(value, imageGen!, {
+                        appearance: char.drawAppearance,
+                    }));
                     hooks.setImageStatus?.('');
                     if ('ref' in result) ref = result.ref;
                     else failure = `（想画张图，但没画成：${result.error}）`;

@@ -497,7 +497,13 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     // 这里同样不为它注入。
     const imageBlock = input.appPrompt
         ? ''
-        : buildCharacterImageBlock(userProfile?.name || '用户', { imageGen: input.imageGen, charId: char.id });
+        : buildCharacterImageBlock(userProfile?.name || '用户', {
+            imageGen: input.imageGen,
+            charId: char.id,
+            // 角色外观是固定段（人设很少改），跟发图能力一起注入。
+            // NovelAI 分角色模式还会再用它单独绑 char_captions。
+            drawAppearance: char.drawAppearance,
+        });
     const imageChatActive = !!imageBlock;
     if (imageChatActive && !input.timelyByWorker) {
         systemPrompt += imageBlock;

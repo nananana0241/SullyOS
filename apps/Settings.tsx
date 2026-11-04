@@ -13,6 +13,13 @@ import { extractContent, safeResponseJson } from '../utils/safeApi';
 import { generateImage } from '../utils/imageStudio';
 import { getLocalDateKey } from '../utils/localDate';
 import { extractModelIds, normalizeModelIds } from '../utils/modelList';
+import {
+    NOVELAI_MODELS,
+    NOVELAI_OFFICIAL_BASE,
+    normalizeNovelAiConfig,
+} from '../utils/novelaiImage';
+import NovelAiSettingsModal from '../components/settings/NovelAiSettingsModal';
+import type { ImageGenApiConfig, ImageGenProvider, NovelAiImageConfig, NovelAiRolePromptMode } from '../types';
 import { shareOrDownloadBlob } from '../utils/shareExport';
 import { bucketRetryCount, isAnalyticsConfigured, isAnalyticsEnabled, setAnalyticsEnabled, trackEvent } from '../utils/analytics';
 import Modal from '../components/os/Modal';
@@ -519,6 +526,23 @@ const Settings: React.FC = () => {
   const [localImageGenModel, setLocalImageGenModel] = useState(apiConfig.imageGen?.model || '');
   const [localImageGenSize, setLocalImageGenSize] = useState(apiConfig.imageGen?.size || '');
   const [localImageGenStyle, setLocalImageGenStyle] = useState(apiConfig.imageGen?.stylePrompt || '');
+  // NovelAI 专属：协议、连线方式、分角色模式、生成设定草稿。全部只改草稿，
+  // 点「保存」才写进 apiConfig.imageGen。
+  const [localImageGenProvider, setLocalImageGenProvider] = useState<ImageGenProvider>(
+    apiConfig.imageGen?.provider === 'novelai' ? 'novelai' : 'openai'
+  );
+  const [localNovelAiConfig, setLocalNovelAiConfig] = useState<NovelAiImageConfig>(
+    () => normalizeNovelAiConfig(apiConfig.imageGen?.novelai)
+  );
+  const [localNovelAiConnection, setLocalNovelAiConnection] = useState<'official' | 'custom'>(
+    apiConfig.imageGen?.novelai?.connection === 'custom' ? 'custom' : 'official'
+  );
+  const [localNovelAiRolePromptMode, setLocalNovelAiRolePromptMode] = useState<NovelAiRolePromptMode>(
+    apiConfig.imageGen?.novelai?.rolePromptMode || 'auto'
+  );
+  const [showNovelAiSettings, setShowNovelAiSettings] = useState(false);
+  const [isLoadingNovelAiModels, setIsLoadingNovelAiModels] = useState(false);
+  const [novelAiModelMsg, setNovelAiModelMsg] = useState('');
   const [testingImageGen, setTestingImageGen] = useState(false);
   const [imageGenStatusMsg, setImageGenStatusMsg] = useState('');
   const [localMiniMaxKey, setLocalMiniMaxKey] = useState(apiConfig.minimaxApiKey || '');
@@ -1263,16 +1287,33 @@ const Settings: React.FC = () => {
    */
   const handleSaveImageGen = async () => {
     const enabled = localImageGenEnabled;
-    const next = {
+    const isNovelAi = localImageGenProvider === 'novelai';
+    // NovelAI 官方直连不需要填 URL（内置地址），只有自定义中转才要；
+    // OpenAI 兼容那条路 URL 仍然必填。
+    const needsUrl = !isNovelAi || localNovelAiConnection === 'custom';
+    const next: ImageGenApiConfig = {
       enabled,
       baseUrl: normalizeApiBaseUrl(localImageGenUrl),
       apiKey: normalizeApiCredential(localImageGenKey),
       model: normalizeApiModel(localImageGenModel),
+      ...(isNovelAi ? {
+        provider: 'novelai' as const,
+        novelai: normalizeNovelAiConfig({
+          ...localNovelAiConfig,
+          connection: localNovelAiConnection,
+          rolePromptMode: localNovelAiRolePromptMode,
+        }),
+      } : {}),
       ...(localImageGenSize ? { size: localImageGenSize } : {}),
       ...(localImageGenStyle.trim() ? { stylePrompt: localImageGenStyle.trim() } : {}),
     };
-    if (enabled && (!next.baseUrl || !next.apiKey || !next.model)) {
-      addToast('开启生图 API 前，请填写完整的 URL、Key 和 Model', 'error');
+    if (enabled && ((needsUrl && !next.baseUrl) || !next.apiKey || !next.model)) {
+      addToast(
+        needsUrl
+          ? '开启生图 API 前，请填写完整的 URL、Key 和 Model'
+          : '开启 NovelAI 前，请填写 Key 和模型',
+        'error',
+      );
       return;
     }
     setLocalImageGenUrl(next.baseUrl);
@@ -1289,7 +1330,10 @@ const Settings: React.FC = () => {
     setTestingImageGen(true);
     setImageGenStatusMsg('');
     try {
-      const result = await generateImage('一只坐在窗台上的橘猫，水彩画风', next);
+      const testPrompt = isNovelAi
+        ? '1girl, orange cat, sitting on windowsill, watercolor (medium), soft lighting'
+        : '一只坐在窗台上的橘猫，水彩画风';
+      const result = await generateImage(testPrompt, next);
       if ('ref' in result) {
         updateApiConfig({ imageGen: next });
         await DB.saveGalleryImage({
@@ -1311,6 +1355,52 @@ const Settings: React.FC = () => {
       trackEvent('测试生图 API', { result: '失败' });
     } finally {
       setTestingImageGen(false);
+    }
+  };
+
+  /**
+   * NovelAI「拉取模型」。
+   *
+   * NAI 的生图模型没有 /models 接口（`/oa/v1/models` 只列文字模型），所以模型列表是内置的。
+   * 这个按钮真正干的事是：拿 Key 去查一次订阅，验证 Token 有效、账号有这个权限。
+   * 不白点——比存一排模型名有用。
+   */
+  const handleFetchNovelAiModels = async () => {
+    const apiKey = normalizeApiCredential(localImageGenKey);
+    if (!apiKey) { setNovelAiModelMsg('先填 Key'); return; }
+    const base = localNovelAiConnection === 'custom'
+      ? normalizeApiBaseUrl(localImageGenUrl)
+      : NOVELAI_OFFICIAL_BASE;
+    if (!base) { setNovelAiModelMsg('自定义中转要填地址'); return; }
+    setIsLoadingNovelAiModels(true);
+    setNovelAiModelMsg('');
+    try {
+      const response = await fetch(`${base}/user/subscription`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      });
+      if (response.status === 401) {
+        setNovelAiModelMsg('❌ Key 无效或已过期');
+        return;
+      }
+      if (!response.ok) {
+        setNovelAiModelMsg(`❌ 检查失败：HTTP ${response.status}`);
+        return;
+      }
+      const data = await safeResponseJson(response).catch(() => null);
+      const tier = data?.tier ?? data?.data?.tier;
+      const active = data?.active ?? data?.data?.active;
+      const perks = Number(data?.perks ?? data?.data?.perks ?? 0);
+      if (active === false || perks <= 0) {
+        setNovelAiModelMsg('⚠️ Key 有效，但这个账号没有有效订阅，生图会失败');
+      } else {
+        setNovelAiModelMsg(`✅ Key 有效${tier != null ? `（tier ${tier}）` : ''}，已载入 ${NOVELAI_MODELS.length} 个内置模型`);
+      }
+      setLocalImageGenModel(prev => (prev && NOVELAI_MODELS.some(m => m.id === prev)) ? prev : NOVELAI_MODELS[0].id);
+    } catch (error: any) {
+      setNovelAiModelMsg(`❌ 检查失败：${error?.message || '网络错误'}`);
+    } finally {
+      setIsLoadingNovelAiModels(false);
     }
   };
 
@@ -2882,7 +2972,7 @@ const Settings: React.FC = () => {
                         <div>
                             <div className="text-xs font-bold text-slate-600">允许角色画图</div>
                             <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                                填 OpenAI 兼容的 <span className="font-mono">/images/generations</span> 中转。
+                                接 NovelAI 官方直连，或 OpenAI 兼容的 <span className="font-mono">/images/generations</span> 中转。
                             </p>
                         </div>
                         <button
@@ -2904,17 +2994,34 @@ const Settings: React.FC = () => {
                 </p>
 
                 <div className={`space-y-3 transition-opacity ${localImageGenEnabled ? 'opacity-100' : 'opacity-50'}`}>
+                    {/* 协议：NovelAI 跟 OpenAI 中转的请求体完全不同，先让用户选对。 */}
                     <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
-                        <input
-                            type="text"
-                            value={localImageGenUrl}
-                            onChange={event => setLocalImageGenUrl(event.target.value)}
-                            disabled={!localImageGenEnabled}
-                            placeholder="https://.../v1"
-                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
-                        />
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">协议</label>
+                        <div className="grid grid-cols-2 gap-2">
+                            {([
+                                { id: 'novelai', name: 'NovelAI', desc: '官方直连 / NAI 格式中转' },
+                                { id: 'openai', name: 'OpenAI 兼容', desc: 'gpt-image / SD 中转' },
+                            ] as const).map(option => (
+                                <button
+                                    key={option.id}
+                                    type="button"
+                                    disabled={!localImageGenEnabled}
+                                    onClick={() => setLocalImageGenProvider(option.id)}
+                                    className={`rounded-xl px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${
+                                        localImageGenProvider === option.id
+                                            ? 'bg-pink-500 text-white shadow-md shadow-pink-500/20'
+                                            : 'bg-white/60 text-slate-600 border border-slate-200/60'
+                                    }`}
+                                >
+                                    <div className="text-xs font-bold">{option.name}</div>
+                                    <div className={`text-[9px] mt-0.5 ${localImageGenProvider === option.id ? 'text-white/80' : 'text-slate-400'}`}>
+                                        {option.desc}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
                     </div>
+
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Key</label>
                         <input
@@ -2922,21 +3029,157 @@ const Settings: React.FC = () => {
                             value={localImageGenKey}
                             onChange={event => setLocalImageGenKey(event.target.value)}
                             disabled={!localImageGenEnabled}
-                            placeholder="sk-..."
+                            placeholder={localImageGenProvider === 'novelai' ? 'NovelAI 的 Persistent API Token' : 'sk-...'}
                             className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
                         />
+                        {localImageGenProvider === 'novelai' && (
+                            <p className="text-[9px] text-slate-300 mt-1 px-1 leading-relaxed">
+                                不是登录密码，也不是 sk- 开头的对话 Key。去 NovelAI 网页版 Account Settings → 点 <span className="font-mono">Get Persistent API Token</span> 拿的那一串。
+                            </p>
+                        )}
                     </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Model</label>
-                        <input
-                            type="text"
-                            value={localImageGenModel}
-                            onChange={event => setLocalImageGenModel(event.target.value)}
-                            disabled={!localImageGenEnabled}
-                            placeholder="gpt-image-1 / dall-e-3 / 你中转支持的模型名"
-                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
-                        />
-                    </div>
+
+                    {localImageGenProvider === 'novelai' ? (
+                        <>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">连线方式</label>
+                                <select
+                                    value={localNovelAiConnection}
+                                    onChange={event => setLocalNovelAiConnection(event.target.value as 'official' | 'custom')}
+                                    disabled={!localImageGenEnabled}
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed appearance-none"
+                                >
+                                    <option value="official">官方直连（image.novelai.net）</option>
+                                    <option value="custom">自定义中转（挂 NAI 格式的第三方站）</option>
+                                </select>
+                            </div>
+
+                            {localNovelAiConnection === 'custom' && (
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
+                                    <input
+                                        type="text"
+                                        value={localImageGenUrl}
+                                        onChange={event => setLocalImageGenUrl(event.target.value)}
+                                        disabled={!localImageGenEnabled}
+                                        placeholder="https://your-proxy.example.com"
+                                        className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                                    />
+                                    <p className="text-[9px] text-slate-300 mt-1 px-1 leading-relaxed">
+                                        要能接 <span className="font-mono">/ai/generate-image</span>，并且认识 NovelAI 的参数格式。普通的 OpenAI 转发生图请选上面的「OpenAI 兼容」。
+                                    </p>
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">分角色发送</label>
+                                <select
+                                    value={localNovelAiRolePromptMode}
+                                    onChange={event => setLocalNovelAiRolePromptMode(event.target.value as 'auto' | 'separate' | 'merged')}
+                                    disabled={!localImageGenEnabled}
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed appearance-none"
+                                >
+                                    <option value="auto">自动（官方分角色，其他自定义端点合并）</option>
+                                    <option value="separate">分角色发送（NAI 官方）</option>
+                                    <option value="merged">合并进主提示词（ComfyUI 等转接）</option>
+                                </select>
+                                <p className="text-[9px] text-slate-300 mt-1 px-1 leading-relaxed">
+                                    NAI 官方会把每个角色的外观单独绑定；但挂 NAI 格式、实际是 ComfyUI 或其他生图的端点通常不认这种写法，角色外观会整段丢失。画出来不像角色时，改成「合并进主提示词」。
+                                    <br />角色外观在「神经链接 → 角色 → 设定」里的「生图外观」填。
+                                </p>
+                            </div>
+
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">模型</label>
+                                <select
+                                    value={localImageGenModel}
+                                    onChange={event => setLocalImageGenModel(event.target.value)}
+                                    disabled={!localImageGenEnabled}
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed appearance-none"
+                                >
+                                    {!NOVELAI_MODELS.some(m => m.id === localImageGenModel) && localImageGenModel && (
+                                        <option value={localImageGenModel}>{localImageGenModel}</option>
+                                    )}
+                                    {NOVELAI_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                                </select>
+                                <button
+                                    type="button"
+                                    onClick={handleFetchNovelAiModels}
+                                    disabled={!localImageGenEnabled || isLoadingNovelAiModels}
+                                    className="mt-2 flex items-center gap-1.5 text-xs font-bold text-blue-500 active:opacity-60 disabled:opacity-40"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`w-3.5 h-3.5 ${isLoadingNovelAiModels ? 'animate-spin' : ''}`}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992V4.356m0 4.992-3.181-3.183a8.25 8.25 0 0 0-11.313 0M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 11.313 0" />
+                                    </svg>
+                                    {isLoadingNovelAiModels ? '正在检查账号…' : '拉取模型'}
+                                </button>
+                                {novelAiModelMsg && (
+                                    <p className={`text-[9px] mt-1 px-1 leading-relaxed ${novelAiModelMsg.startsWith('✅') ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                        {novelAiModelMsg}
+                                    </p>
+                                )}
+                                <p className="text-[9px] text-slate-300 mt-1 px-1 leading-relaxed">
+                                    NovelAI 没有给生图模型留 /models 接口，模型列表是内置的；「拉取模型」会顺带验证 Key 和订阅等级。
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => setShowNovelAiSettings(true)}
+                                disabled={!localImageGenEnabled}
+                                className="w-full flex items-center justify-between rounded-xl bg-white/60 border border-slate-200/60 px-4 py-3 active:scale-[0.99] transition-transform disabled:cursor-not-allowed"
+                            >
+                                <span className="text-xs font-bold text-slate-600">生成设定</span>
+                                <span className="flex items-center gap-1 text-xs font-mono text-blue-500">
+                                    {localNovelAiConfig.width}×{localNovelAiConfig.height}
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                                        <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z" clipRule="evenodd" />
+                                    </svg>
+                                </span>
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">URL</label>
+                                <input
+                                    type="text"
+                                    value={localImageGenUrl}
+                                    onChange={event => setLocalImageGenUrl(event.target.value)}
+                                    disabled={!localImageGenEnabled}
+                                    placeholder="https://.../v1"
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">Model</label>
+                                <input
+                                    type="text"
+                                    value={localImageGenModel}
+                                    onChange={event => setLocalImageGenModel(event.target.value)}
+                                    disabled={!localImageGenEnabled}
+                                    placeholder="gpt-image-1 / dall-e-3 / 你中转支持的模型名"
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all disabled:cursor-not-allowed"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">图片尺寸</label>
+                                <select
+                                    value={localImageGenSize}
+                                    onChange={event => setLocalImageGenSize(event.target.value)}
+                                    disabled={!localImageGenEnabled}
+                                    className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed"
+                                >
+                                    <option value="">默认（1024×1024）</option>
+                                    <option value="1024x1024">方形 1024×1024</option>
+                                    <option value="1024x1536">竖图 1024×1536</option>
+                                    <option value="1536x1024">横图 1536×1024</option>
+                                </select>
+                                <p className="text-[9px] text-slate-300 mt-1 px-1">部分中转只认 1024×1024；报错就换回默认。</p>
+                            </div>
+                        </>
+                    )}
+
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">画风提示词</label>
                         <textarea
@@ -2945,27 +3188,15 @@ const Settings: React.FC = () => {
                             disabled={!localImageGenEnabled}
                             rows={3}
                             maxLength={400}
-                            placeholder="比如：日系水彩插画，柔和光线，淡淡的胶片颗粒感"
+                            placeholder={localImageGenProvider === 'novelai'
+                                ? '比如：1girl, watercolor (medium), soft lighting, film grain'
+                                : '比如：日系水彩插画，柔和光线，淡淡的胶片颗粒感'}
                             className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed resize-none"
                         />
                         <p className="text-[9px] text-slate-300 mt-1 px-1">
                             会固定追加在角色写的画面描述后面。角色知道画风是固定的，只写画面内容。留空则不追加。
+                            {localImageGenProvider === 'novelai' && ' NovelAI 认英文 tag，用逗号分隔。'}
                         </p>
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">图片尺寸</label>
-                        <select
-                            value={localImageGenSize}
-                            onChange={event => setLocalImageGenSize(event.target.value)}
-                            disabled={!localImageGenEnabled}
-                            className="w-full bg-white/60 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm focus:bg-white transition-all disabled:cursor-not-allowed"
-                        >
-                            <option value="">默认（1024×1024）</option>
-                            <option value="1024x1024">方形 1024×1024</option>
-                            <option value="1024x1536">竖图 1024×1536</option>
-                            <option value="1536x1024">横图 1536×1024</option>
-                        </select>
-                        <p className="text-[9px] text-slate-300 mt-1 px-1">部分中转只认 1024×1024；报错就换回默认。</p>
                     </div>
                 </div>
 
@@ -4913,6 +5144,47 @@ const Settings: React.FC = () => {
         isOpen={showAmsgCloudData}
         onClose={() => setShowAmsgCloudData(false)}
         characters={characters}
+        addToast={addToast}
+      />
+
+      <NovelAiSettingsModal
+        open={showNovelAiSettings}
+        config={{
+          enabled: localImageGenEnabled,
+          baseUrl: normalizeApiBaseUrl(localImageGenUrl),
+          apiKey: normalizeApiCredential(localImageGenKey),
+          model: normalizeApiModel(localImageGenModel),
+          provider: 'novelai',
+          stylePrompt: localImageGenStyle.trim() || undefined,
+          novelai: normalizeNovelAiConfig({
+            ...localNovelAiConfig,
+            connection: localNovelAiConnection,
+            rolePromptMode: localNovelAiRolePromptMode,
+          }),
+        }}
+        value={localNovelAiConfig}
+        onChange={setLocalNovelAiConfig}
+        onSave={(next) => {
+          // 生图已经接上时，设定改完就立刻生效；没接上时只更新草稿，
+          // 等用户点「保存生图 API」再一起写入（也顺带跑一次测试图）。
+          setLocalNovelAiConfig(next);
+          if (localImageGenEnabled && apiConfig.imageGen?.provider === 'novelai') {
+            updateApiConfig({
+              imageGen: {
+                ...apiConfig.imageGen,
+                novelai: normalizeNovelAiConfig({
+                  ...next,
+                  connection: localNovelAiConnection,
+                  rolePromptMode: localNovelAiRolePromptMode,
+                }),
+              },
+            });
+            addToast('生成设定已保存', 'success');
+          } else {
+            addToast('生成设定已更新（再点一次「保存生图 API」才会写入）', 'info');
+          }
+        }}
+        onClose={() => setShowNovelAiSettings(false)}
         addToast={addToast}
       />
 

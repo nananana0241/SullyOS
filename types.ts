@@ -273,8 +273,69 @@ export interface VisionApiConfig {
   model: string;
 }
 
+/** 生图走的协议。「openai」= 兼容 /images/generations 的中转；「novelai」= NovelAI 官方（或挂 NAI 格式的中转）。 */
+export type ImageGenProvider = 'openai' | 'novelai';
+
 /**
- * 生图中转（OpenAI 兼容 POST /images/generations）。
+ * 角色外观怎么发进 NovelAI 的提示词。
+ *  - auto：官方端点走分角色，自定义端点自动合并（少数派默认）
+ *  - separate：写进 `v4_prompt.caption.char_captions`，由 NAI 单独绑定每个角色
+ *  - merged：把角色外观塞进主提示词，适合 ComfyUI 之类不认 NAI 格式的端点
+ */
+export type NovelAiRolePromptMode = 'auto' | 'separate' | 'merged';
+
+/** 一条画风参考（Vibe Transfer）。 */
+export interface NovelAiVibeRef {
+  id: string;
+  name: string;
+  /** 已编码的 vibe，base64（.naiv4vibe 里的同款内容）。 */
+  data: string;
+  /** 参考强度 0~1。 */
+  strength: number;
+  /** informationExtracted 0~1，越高越贴近原图构图。 */
+  informationExtracted: number;
+}
+
+/**
+ * NovelAI 专属生成设定。
+ *
+ * 字段名对齐官方 `/ai/generate-image` 的 `parameters`，界面上的中文名对应见
+ * `utils/novelaiImage.ts` 的 SAMPLER / NOISE_SCHEDULE / UC_PRESET 表。
+ */
+export interface NovelAiImageConfig {
+  /** official = https://image.novelai.net；custom = 用户填的挂 NAI 格式的中转。 */
+  connection: 'official' | 'custom';
+  rolePromptMode: NovelAiRolePromptMode;
+  width: number;
+  height: number;
+  steps: number;
+  /** 提示词相关性（CFG Scale）。 */
+  scale: number;
+  sampler: string;
+  noiseSchedule: string;
+  /** -1 = 随机。 */
+  seed: number;
+  ucPreset: number;
+  cfgRescale: number;
+  /** 负面提示词强度（Undesired Content Strength）。 */
+  ucStrength: number;
+  /** V4/V4.5 自动加官方品质词串。 */
+  qualityTags: boolean;
+  /** Variety+（skip_cfg_above_sigma）。仅 V4 系列有效。 */
+  varietyBoost: boolean;
+  dynamicThresholding: boolean;
+  sm: boolean;
+  smDyn: boolean;
+  /** 正面预设词，拼在角色提示词前面。 */
+  positivePreset: string;
+  /** 负面预设词。 */
+  negativePreset: string;
+  vibeEnabled: boolean;
+  vibeRefs: NovelAiVibeRef[];
+}
+
+/**
+ * 生图配置。两种协议共用这一份：`provider` 决定走哪条请求。
  * 角色写 `[[DRAW: 描述]]` 时用它画图；没配就不启用，角色也不会画。
  */
 export interface ImageGenApiConfig {
@@ -282,6 +343,8 @@ export interface ImageGenApiConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 缺省按 'openai'（老配置没有这个字段，行为保持不变）。 */
+  provider?: ImageGenProvider;
   /** 可选，默认按 1024x1024。只能填 OpenAI 那几种（1024x1024 / 1024x1536 / 1536x1024）。 */
   size?: string;
   /**
@@ -289,6 +352,8 @@ export interface ImageGenApiConfig {
    * 也能让角色知道"我的画风是固定的"，不会在描述里重复写风格。
    */
   stylePrompt?: string;
+  /** NovelAI 专属设定（provider === 'novelai' 时用）。 */
+  novelai?: NovelAiImageConfig;
 }
 
 /** A complete dialogue endpoint, separate from TTS/vision configuration. */
@@ -2739,6 +2804,12 @@ export interface MemoryPalaceWaterlineConfig {
 export interface CharacterProfile {
   /** Local default for this character's dialogue; absent means follow Settings. Never shared in cards. */
   dialogueApi?: DialogueApiConfig;
+  /**
+   * 角色外观（Danbooru 风格 tag）：`[[DRAW:]]` 生图时用来锁住长相。
+   * NovelAI 分角色模式下单独绑进 char_captions，合并模式下拼进主提示词。
+   * 不填也能画，只是每张长得不一样。
+   */
+  drawAppearance?: string;
   id: string;
   name: string;
   avatar: string;
