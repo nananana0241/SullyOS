@@ -24,15 +24,19 @@ export function buildCharacterImageBlock(
         enabled?: boolean;
         imageGen?: ImageGenApiConfig;
         charId?: string;
+        /** 角色的固定外观 tag（CharacterProfile.drawAppearance）。 */
+        drawAppearance?: string;
     } = {},
 ): string {
     if (options.enabled === false) return '';
     const canDraw = isImageGenReady(options.imageGen);
+    const isNovelAi = options.imageGen?.provider === 'novelai';
     const hasSearch = getEnabledMcpServers(options.charId).some(server =>
         (server.tools || []).some(tool => /search|browse|web/i.test(tool.name)));
     if (!canDraw && !hasSearch) return '';
 
     const style = (options.imageGen?.stylePrompt || '').trim();
+    const appearance = (options.drawAppearance || '').trim();
     const lines: string[] = [];
     lines.push('');
     lines.push('---');
@@ -43,8 +47,19 @@ export function buildCharacterImageBlock(
     if (canDraw) {
         lines.push('1. 画一张新的：');
         lines.push('   `[[DRAW: 画面的具体描述]]`');
-        lines.push('   - 描述要具体：主体、动作、场景、光线、氛围。可以带上你此刻的心情。');
+        if (isNovelAi) {
+            // NovelAI 只认英文 danbooru tag，写中文描述会画出一堆无关的东西。
+            lines.push('   - **这个生图接口只认英文 tag，用逗号分隔，不要写中文句子、不要写完整句子。**');
+            lines.push('   - 例：`[[DRAW: 1girl, standing on rooftop, night, city lights, wind, from behind]]`');
+            lines.push('   - 写：人数与性别（1girl / 1boy / 2girls）、动作、场景、光线、构图（close-up / full body / from behind）。');
+            lines.push('   - 不要在 tag 里写你的名字或"我"，直接描述画面本身。');
+        } else {
+            lines.push('   - 描述要具体：主体、动作、场景、光线、氛围。可以带上你此刻的心情。');
+        }
         if (style) lines.push(`   - **画风固定为：${style}**。不用在描述里重复画风，只写画面内容。`);
+        if (appearance) {
+            lines.push(`   - **你自己的外观是固定的：${appearance}**。画你自己时不用重复写这些 tag，系统会自动带上。`);
+        }
         lines.push('   - 画图要等十几秒到一分钟，别连着画好几张。');
         lines.push('   - 发出标签后，先用一句话说说你在画什么，让对方知道你在忙这件事。');
         if (hasSearch) lines.push('');

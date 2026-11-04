@@ -1,4 +1,5 @@
 import type { APIConfig, ApiPreset } from '../types';
+import { normalizeNovelAiConfig } from './novelaiImage';
 
 // Clipboard contents can carry zero-width characters that String.trim() does not
 // remove. They are never valid at the edges of an API URL, token, or model id.
@@ -38,8 +39,11 @@ export function normalizeApiConfig(config: APIConfig): APIConfig {
         baseUrl: normalizeApiBaseUrl(imageGen.baseUrl),
         apiKey: normalizeApiCredential(imageGen.apiKey),
         model: normalizeApiModel(imageGen.model),
+        ...(imageGen.provider === 'novelai' ? { provider: 'novelai' as const } : {}),
         ...(imageGen.size ? { size: String(imageGen.size).trim() } : {}),
         ...(imageGen.stylePrompt ? { stylePrompt: String(imageGen.stylePrompt).trim() } : {}),
+        // NovelAI 那套数字/枚举参数由 normalizeNovelAiConfig 兜底，这里只保证结构传下去。
+        ...(imageGen.novelai ? { novelai: normalizeNovelAiConfig(imageGen.novelai) } : {}),
       },
     } : {}),
   };

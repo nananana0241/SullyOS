@@ -1475,6 +1475,22 @@ ${isInitialGeneration ? `
                                 />
                            </div>
 
+                           {/* 生图外观：只给 [[DRAW:]] 生图用，不进对话上下文。
+                               NovelAI 分角色模式会把它单独绑进 char_captions 锁住长相；
+                               不填也能画，只是每张长得不一样。 */}
+                           <div>
+                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">生图外观 (Draw Appearance)</label>
+                               <textarea
+                                   value={formData.drawAppearance || ''}
+                                   onChange={(e) => handleChange('drawAppearance', e.target.value)}
+                                   className="w-full h-24 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all vr-reader-scroll font-mono text-[12px]"
+                                   placeholder="1girl, long silver hair, red eyes, black hoodie, choker"
+                               />
+                               <p className="text-[10px] text-slate-400 mt-1.5 px-1 leading-relaxed">
+                                   给生图用的外貌 tag（英文、逗号分隔），不参与聊天。装上 NovelAI 后，角色画自己时会带上它，画出来才像本人。
+                               </p>
+                           </div>
+
                            <CharacterSettingsSection title="时间感知与时区" summary={formData.customTimezoneEnabled ? formData.customTimezone || '自定义时区' : '跟随本机时区'}>
                            {/* 时间感知 & 时区：三个独立开关，可任意组合（聊天时间感知 / 自定义时区 / 线下时间感知） */}
                            <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 space-y-4">
