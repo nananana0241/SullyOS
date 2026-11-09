@@ -5,6 +5,7 @@ import {
     NOVELAI_OFFICIAL_BASE,
     buildNovelAiRequest,
     createNovelAiVibeRef,
+    decodeNovelAiImageResponse,
     isCuratedNovelAiModel,
     isNovelAiConfigReady,
     normalizeNovelAiConfig,
@@ -173,5 +174,50 @@ describe('novelaiImage / rating tag', () => {
     it('detects curated models', () => {
         expect(isCuratedNovelAiModel('nai-diffusion-4-5-curated')).toBe(true);
         expect(isCuratedNovelAiModel('nai-diffusion-4-5-full')).toBe(false);
+    });
+});
+
+// 不少挂 NAI 格式的第三方中转不理会 `Accept: application/json`，照样把官方默认
+// 的 zip 包甚至裸图片二进制原样转发回来；以前这种响应直接当 JSON 解析报错
+// "API返回了无效JSON"，用户填的中转地址明明是对的。
+describe('novelaiImage / decodeNovelAiImageResponse（兼容中转回传的非 JSON 格式）', () => {
+    it('decodes the official zip response (image_0.png inside)', async () => {
+        const { default: JSZip } = await import('jszip');
+        const zip = new JSZip();
+        const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+        zip.file('image_0.png', pngBytes);
+        const buffer = (await zip.generateAsync({ type: 'uint8array' })).buffer as ArrayBuffer;
+
+        const dataUrl = await decodeNovelAiImageResponse(buffer);
+        expect(dataUrl.startsWith('data:image/png;base64,')).toBe(true);
+    });
+
+    it('decodes a raw PNG byte stream (relay forwarding the binary as-is)', async () => {
+        const pngSignature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
+        const dataUrl = await decodeNovelAiImageResponse(pngSignature.buffer);
+        expect(dataUrl.startsWith('data:image/png;base64,')).toBe(true);
+    });
+
+    it('decodes a raw JPEG byte stream', async () => {
+        const jpegSignature = new Uint8Array([0xff, 0xd8, 0xff, 9, 9]);
+        const dataUrl = await decodeNovelAiImageResponse(jpegSignature.buffer);
+        expect(dataUrl.startsWith('data:image/jpeg;base64,')).toBe(true);
+    });
+
+    it('still decodes the official Accept: application/json shape', async () => {
+        const json = JSON.stringify({ images: [{ image: 'QUJD', seed: 42 }] });
+        const buffer = new TextEncoder().encode(json).buffer;
+        const dataUrl = await decodeNovelAiImageResponse(buffer);
+        expect(dataUrl).toBe('data:image/png;base64,QUJD');
+    });
+
+    it('reports an HTML error page from a relay as a readable error, not "invalid JSON"', async () => {
+        const html = '<html><head><title>502 Bad Gateway</title></head></html>';
+        const buffer = new TextEncoder().encode(html).buffer;
+        await expect(decodeNovelAiImageResponse(buffer)).rejects.toThrow(/502 Bad Gateway/);
+    });
+
+    it('rejects an empty response', async () => {
+        await expect(decodeNovelAiImageResponse(new ArrayBuffer(0))).rejects.toThrow('NovelAI 没有返回图片');
     });
 });

@@ -1,5 +1,4 @@
 import type { ImageGenApiConfig, NovelAiImageConfig, NovelAiVibeRef } from '../types';
-import { safeFetchJson } from './safeApi';
 import { putImageBlobDeduped, dataUrlToBlob } from './blobRef';
 
 /**
@@ -329,7 +328,13 @@ function sizeFromRatio(w: number, h: number): { width: number; height: number } 
  * 调 NovelAI 画一张图，落成本机图片令牌。
  *
  * 请求带 `Accept: application/json`，官方就返回 `{ images: [{ image: base64 }] }`，
- * 省掉解 zip 的一步；万一是中转不支持、仍然回了 zip，会落到错误分支并如实报出来。
+ * 省掉解 zip 的一步。但不少挂 NAI 格式的第三方中转不理会 `Accept` 头，照样把官方
+ * 默认的 zip 包（`image_0.png` 装在里面）甚至裸图片二进制原样转发回来——这里按
+ * 魔数自动识别 zip / PNG / JPEG / JSON 四种情况，而不是假设对方听话。
+ *
+ * 必须用原始 `fetch` 而不是 `safeFetchJson`：后者内部 `response.text()` 会用
+ * UTF-8 解码正文，zip/图片这类二进制一旦被当文本解码就全毁了，必须先拿
+ * `arrayBuffer()` 按字节判断类型。
  */
 export async function generateNovelAiImage(
     prompt: string,
@@ -349,7 +354,7 @@ export async function generateNovelAiImage(
     options.signal?.addEventListener('abort', onAbort);
 
     try {
-        const data = await safeFetchJson(url, {
+        const response = await fetch(url, {
             method: 'POST',
             signal: controller.signal,
             headers: {
@@ -358,17 +363,16 @@ export async function generateNovelAiImage(
                 'Accept': 'application/json',
             },
             body: JSON.stringify(body),
-        }, 0, NOVELAI_TIMEOUT_MS, { appName: '消息', purpose: '生图' });
+        });
 
-        const first = Array.isArray(data?.images) ? data.images[0] : null;
-        const b64 = first?.image || first?.b64_json || data?.image;
-        if (typeof b64 === 'string' && b64) {
-            const dataUrl = b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`;
-            const { token } = await putImageBlobDeduped(dataUrlToBlob(dataUrl));
-            const seed = typeof first?.seed === 'number' ? first.seed : undefined;
-            return seed != null ? { ref: token, seed } : { ref: token };
+        if (!response.ok) {
+            throw new Error(await readNovelAiErrorText(response));
         }
-        return { error: 'NovelAI 没有返回图片' };
+
+        const buffer = await response.arrayBuffer();
+        const dataUrl = await decodeNovelAiImageResponse(buffer);
+        const { token } = await putImageBlobDeduped(dataUrlToBlob(dataUrl));
+        return { ref: token };
     } catch (e: any) {
         const message = e?.name === 'AbortError' ? '生图超时' : (e?.message || 'NovelAI 生图失败');
         return { error: humanizeNovelAiError(message) };
@@ -376,6 +380,77 @@ export async function generateNovelAiImage(
         clearTimeout(timer);
         options?.signal?.removeEventListener('abort', onAbort);
     }
+}
+
+/** 非 2xx 响应的错误文案提取：可能是 JSON（官方/规范中转）或 HTML（反代报错页）。 */
+async function readNovelAiErrorText(response: Response): Promise<string> {
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (trimmed.startsWith('<')) {
+        const titleMatch = trimmed.match(/<title>(.*?)<\/title>/i);
+        return titleMatch ? titleMatch[1] : `HTTP ${response.status}`;
+    }
+    if (!trimmed) return `HTTP ${response.status}`;
+    try {
+        const data = JSON.parse(trimmed);
+        return data?.error?.message || data?.error || data?.message || `HTTP ${response.status}`;
+    } catch {
+        return trimmed.slice(0, 200);
+    }
+}
+
+/**
+ * 把生图响应的原始字节解成一张图的 data URL。按魔数判断格式，不猜测 Content-Type
+ * （中转经常标错）：
+ *  - `PK` 开头 → zip（官方默认格式，取包内第一个文件）
+ *  - PNG/JPEG 签名 → 中转直接转发的裸图片二进制
+ *  - 其余按文本解析 JSON（`Accept: application/json` 生效时官方走这条）
+ */
+export async function decodeNovelAiImageResponse(buffer: ArrayBuffer): Promise<string> {
+    const bytes = new Uint8Array(buffer);
+    if (!bytes.length) throw new Error('NovelAI 没有返回图片');
+
+    if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+        const base64 = await extractZipImageBase64(buffer);
+        return `data:image/png;base64,${base64}`;
+    }
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+        return `data:image/png;base64,${arrayBufferToBase64(buffer)}`;
+    }
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+        return `data:image/jpeg;base64,${arrayBufferToBase64(buffer)}`;
+    }
+
+    const text = new TextDecoder().decode(buffer);
+    const trimmed = text.trim();
+    if (trimmed.startsWith('<')) {
+        const titleMatch = trimmed.match(/<title>(.*?)<\/title>/i);
+        throw new Error(`中转返回了网页而非图片：${titleMatch ? titleMatch[1] : trimmed.slice(0, 120)}`);
+    }
+    if (!trimmed) throw new Error('NovelAI 没有返回图片');
+
+    let data: any;
+    try {
+        data = JSON.parse(trimmed);
+    } catch {
+        throw new Error(`返回内容既不是图片也不是合法 JSON：${trimmed.slice(0, 120)}`);
+    }
+    const first = Array.isArray(data?.images) ? data.images[0] : null;
+    const b64 = first?.image || first?.b64_json || data?.image;
+    if (typeof b64 === 'string' && b64) {
+        return b64.startsWith('data:') ? b64 : `data:image/png;base64,${b64}`;
+    }
+    throw new Error(data?.error?.message || data?.error || 'NovelAI 没有返回图片');
+}
+
+/** 从 zip 包里取第一个文件（按文件名排序），转成 base64。官方包里只有一张 `image_0.png`。 */
+async function extractZipImageBase64(buffer: ArrayBuffer): Promise<string> {
+    const { default: JSZip } = await import('jszip');
+    const zip = await JSZip.loadAsync(buffer);
+    const entries = Object.values(zip.files).filter(f => !f.dir);
+    if (!entries.length) throw new Error('返回的压缩包里没有图片');
+    const first = entries.sort((a, b) => a.name.localeCompare(b.name))[0];
+    return await first.async('base64');
 }
 
 /** 把接口的英文错误换成能看懂的话；认不出来的照原样带出去。 */
