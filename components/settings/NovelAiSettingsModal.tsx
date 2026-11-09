@@ -432,7 +432,6 @@ export const NovelAiSettingsModal: React.FC<Props> = ({ open, config, value, onC
                             value={draft.positivePreset}
                             onChange={e => patch({ positivePreset: e.target.value })}
                             rows={3}
-                            maxLength={600}
                             placeholder="masterpiece, best quality, ..."
                             className={inputClass + ' resize-none font-mono text-[12px]'}
                         />
@@ -443,7 +442,6 @@ export const NovelAiSettingsModal: React.FC<Props> = ({ open, config, value, onC
                             value={draft.negativePreset}
                             onChange={e => patch({ negativePreset: e.target.value })}
                             rows={4}
-                            maxLength={900}
                             placeholder="lowres, bad anatomy, ..."
                             className={inputClass + ' resize-none font-mono text-[12px]'}
                         />

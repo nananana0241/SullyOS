@@ -61,7 +61,7 @@ export async function generateImage(
         return 'ref' in result ? { ref: result.ref } : { error: result.error };
     }
     if (!isImageGenReady(config)) return { error: '生图 API 没配置完整' };
-    const cleanPrompt = (prompt || '').trim().slice(0, 2000);
+    const cleanPrompt = (prompt || '').trim();
     if (!cleanPrompt) return { error: '缺少画面描述' };
 
     const baseUrl = config.baseUrl.trim().replace(/\/+$/, '');
