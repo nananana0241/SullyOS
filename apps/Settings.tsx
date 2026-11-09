@@ -3195,7 +3195,6 @@ const Settings: React.FC = () => {
                             onChange={event => setLocalImageGenStyle(event.target.value)}
                             disabled={!localImageGenEnabled}
                             rows={3}
-                            maxLength={400}
                             placeholder={localImageGenProvider === 'novelai'
                                 ? '比如：1girl, watercolor (medium), soft lighting, film grain'
                                 : '比如：日系水彩插画，柔和光线，淡淡的胶片颗粒感'}

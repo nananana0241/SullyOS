@@ -187,7 +187,7 @@ export function buildNovelAiRequest(
     const novelai = normalizeNovelAiConfig(config.novelai);
     const base = novelAiBaseUrl(config);
 
-    const cleanPrompt = (prompt || '').trim().slice(0, 1800);
+    const cleanPrompt = (prompt || '').trim();
     const appearance = (options.appearance || '').trim();
     const partner = (options.partnerAppearance || '').trim();
     const style = (config.stylePrompt || '').trim();
@@ -209,7 +209,7 @@ export function buildNovelAiRequest(
         if (style) promptParts.push(style);
     }
     if (rating) promptParts.push(rating);
-    const baseCaption = promptParts.filter(Boolean).join(', ').slice(0, 2000);
+    const baseCaption = promptParts.filter(Boolean).join(', ');
 
     const charCaptions: Array<{ char_caption: string; centers: Array<{ x: number; y: number }> }> = [];
     if (separate) {
@@ -243,7 +243,7 @@ export function buildNovelAiRequest(
         if (mapped) ({ width, height } = mapped);
     }
 
-    const negativePrompt = (negativePreset || '').slice(0, 2000);
+    const negativePrompt = negativePreset || '';
 
     const parameters: Record<string, unknown> = {
         width,
