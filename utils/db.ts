@@ -17,7 +17,7 @@ import { orderWorldEpisodes } from './worldHome/episodeOrder';
 import {
     CharacterProfile, ChatTheme, Message, UserProfile,
     Task, Anniversary, DiaryEntry, RoomTodo, RoomNote, DailySchedule,
-    GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
+    GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, ExamPrepSet, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, XhsOwnedPost, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
     LifeRecord, MedPlan, LifeRecordSettings, CharacterGroup,
@@ -45,7 +45,9 @@ const DB_NAME = 'AetherOS_Data';
 // v72: home projection reads only home-source rows, never scans private-chat history.
 // v73: direct home-turn lookups for incremental journal writes.
 // v74: merge master delivery lookup with both home indexes, including existing v73 databases.
-const DB_VERSION = 74;
+// v75: 自习室·考前冲刺（exam_prep_sets）：一门考试一份共用考试范围 + 多份课件，跟按章节教学的
+// courses 分开存，互不影响。
+const DB_VERSION = 75;
 
 const STORE_CHARACTERS = 'characters';
 const STORE_CHAR_GROUPS = 'character_groups'; // 角色分组定义（角色通过 groupId 指向；与群聊 groups 无关）
@@ -67,6 +69,7 @@ const STORE_GROUPS = 'groups';
 const STORE_JOURNAL_STICKERS = 'journal_stickers';
 const STORE_SOCIAL_POSTS = 'social_posts';
 const STORE_COURSES = 'courses';
+const STORE_EXAM_PREP = 'exam_prep_sets';
 const STORE_GAMES = 'games';
 const STORE_WORLDBOOKS = 'worldbooks'; 
 const STORE_NOVELS = 'novels'; 
@@ -363,6 +366,7 @@ export const openDB = (): Promise<IDBDatabase> => {
       createStore(STORE_JOURNAL_STICKERS, { keyPath: 'name' });
       createStore(STORE_SOCIAL_POSTS, { keyPath: 'id' });
       createStore(STORE_COURSES, { keyPath: 'id' });
+      createStore(STORE_EXAM_PREP, { keyPath: 'id' });
       createStore(STORE_GAMES, { keyPath: 'id' }); 
       createStore(STORE_WORLDBOOKS, { keyPath: 'id' }); 
       createStore(STORE_NOVELS, { keyPath: 'id' });
@@ -2416,6 +2420,31 @@ export const DB = {
       transaction.objectStore(STORE_COURSES).delete(id);
   },
 
+  // --- Exam Prep (自习室·考前冲刺) ---
+  getAllExamPrepSets: async (): Promise<ExamPrepSet[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_EXAM_PREP)) return [];
+      return new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_EXAM_PREP, 'readonly');
+          const store = transaction.objectStore(STORE_EXAM_PREP);
+          const request = store.getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error);
+      });
+  },
+
+  saveExamPrepSet: async (set: ExamPrepSet): Promise<void> => {
+      const db = await openDB();
+      const transaction = db.transaction(STORE_EXAM_PREP, 'readwrite');
+      transaction.objectStore(STORE_EXAM_PREP).put(set);
+  },
+
+  deleteExamPrepSet: async (id: string): Promise<void> => {
+      const db = await openDB();
+      const transaction = db.transaction(STORE_EXAM_PREP, 'readwrite');
+      transaction.objectStore(STORE_EXAM_PREP).delete(id);
+  },
+
   // --- Quiz / Practice Book ---
   getAllQuizzes: async (): Promise<QuizSession[]> => {
       const db = await openDB();
@@ -3573,7 +3602,7 @@ export const DB = {
           });
       };
 
-      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
+      const [characters, characterGroups, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, examPrepSets, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels, bankTx, bankData, xhsActivities, xhsOwnedPosts, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes, lifeRecords, medPlans, lifeRecordSettings] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_CHAR_GROUPS),
           getAllFromStore(STORE_MESSAGES),
@@ -3592,6 +3621,7 @@ export const DB = {
           getAllFromStore(STORE_JOURNAL_STICKERS),
           getAllFromStore(STORE_SOCIAL_POSTS),
           getAllFromStore(STORE_COURSES),
+          getAllFromStore(STORE_EXAM_PREP),
           getAllFromStore(STORE_GAMES),
           getAllFromStore(STORE_WORLDBOOKS),
           getAllFromStore(STORE_STORY_THEATERS),
@@ -3638,7 +3668,7 @@ export const DB = {
       const dollhouseRecord = bankData.find((d: any) => d.id === 'dollhouse_state');
 
       return {
-          characters, characterGroups, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels,
+          characters, characterGroups, messages, customThemes: themes, savedEmojis: emojis, emojiCategories, assets, galleryImages, userProfile, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, savedJournalStickers: journalStickers, socialPosts, courses, examPrepSets, games, worldbooks, storyTheaters, storyTheaterPresets, storyTheaterMasks, novels,
           bankState: mainState ? { ...mainState, id: undefined } : undefined,
           bankDollhouse: dollhouseRecord?.data || undefined,
           bankTransactions: bankTx,
@@ -3709,7 +3739,7 @@ export const DB = {
           STORE_CHARACTERS, STORE_CHAR_GROUPS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
           STORE_ASSETS, STORE_GALLERY, STORE_USER, STORE_DIARIES,
           STORE_TASKS, STORE_ANNIVERSARIES, STORE_ROOM_TODOS, STORE_ROOM_NOTES,
-          STORE_GROUPS, STORE_JOURNAL_STICKERS, STORE_SOCIAL_POSTS, STORE_COURSES, STORE_GAMES, STORE_WORLDBOOKS, STORE_STORY_THEATERS, STORE_STORY_THEATER_PRESETS, STORE_STORY_THEATER_MASKS, STORE_NOVELS, STORE_SONGS,
+          STORE_GROUPS, STORE_JOURNAL_STICKERS, STORE_SOCIAL_POSTS, STORE_COURSES, STORE_EXAM_PREP, STORE_GAMES, STORE_WORLDBOOKS, STORE_STORY_THEATERS, STORE_STORY_THEATER_PRESETS, STORE_STORY_THEATER_MASKS, STORE_NOVELS, STORE_SONGS,
           STORE_BANK_TX, STORE_BANK_DATA,
           STORE_XHS_ACTIVITIES, STORE_XHS_OWNED_POSTS, STORE_XHS_STOCK,
           STORE_QUIZZES,
@@ -3781,6 +3811,7 @@ export const DB = {
           data.groups !== undefined,
           data.socialPosts !== undefined,
           data.courses !== undefined,
+          data.examPrepSets !== undefined,
           data.games !== undefined,
           data.worldbooks !== undefined,
           data.storyTheaters !== undefined,
@@ -4061,6 +4092,10 @@ export const DB = {
           await clearAndAdd(STORE_COURSES, data.courses, '学习课程', false);
           data.courses = undefined as any;
       }, data.courses?.length || 0);
+      await runSection('考前冲刺', data.examPrepSets !== undefined, async () => {
+          await clearAndAdd(STORE_EXAM_PREP, data.examPrepSets, '考前冲刺', false);
+          data.examPrepSets = undefined as any;
+      }, data.examPrepSets?.length || 0);
       await runSection('游戏记录', data.games !== undefined, async () => {
           await clearAndAdd(STORE_GAMES, data.games, '游戏记录', false);
           data.games = undefined as any;
