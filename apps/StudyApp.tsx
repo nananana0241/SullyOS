@@ -7,11 +7,12 @@ import { ContextBuilder } from '../utils/context';
 import Modal from '../components/os/Modal';
 import { safeResponseJson, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
-import { Notepad, Check, X, CheckCircle, XCircle, Hand } from '@phosphor-icons/react';
+import { Notepad, Check, X, CheckCircle, XCircle, Hand, PaperPlaneTilt } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
 import { extractPdfText, isPdfFile } from '../utils/pdfText';
+import { markAmsgStateDirty } from '../utils/amsgStateSync';
 
 type KatexLike = {
     renderToString: (latex: string, options: any) => string;
@@ -305,7 +306,7 @@ const BlackboardRenderer: React.FC<{ text: string, isTyping?: boolean, katexRend
 };
 
 const StudyApp: React.FC = () => {
-    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, characterGroups } = useOS();
+    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, characterGroups, groups, realtimeConfig } = useOS();
     const [mode, setMode] = useState<'bookshelf' | 'classroom' | 'quiz' | 'quiz_review' | 'practice_book'>('bookshelf');
     const [courses, setCourses] = useState<StudyCourse[]>([]);
     const [activeCourse, setActiveCourse] = useState<StudyCourse | null>(null);
@@ -372,6 +373,7 @@ const StudyApp: React.FC = () => {
     const [askingQuestionId, setAskingQuestionId] = useState<string>(''); // which question is being asked about
     const [followUpInput, setFollowUpInput] = useState('');
     const [followUpLoading, setFollowUpLoading] = useState(false);
+    const [isSendingRecap, setIsSendingRecap] = useState(false); // 「发送给角色」摘要生成中
 
     const currentSprite = selectedChar?.sprites?.['normal'] || selectedChar?.avatar;
 
@@ -621,16 +623,29 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
 
     // --- Classroom Logic ---
 
+    // 进课堂时往角色聊天里插一条「正在自习室学习」的系统提示，让角色（和用户自己翻聊天记录时）
+    // 知道这段时间在自习室做什么，不用用户自己转述。只带课程名+章节名，不带原文，省 token。
+    const postStudyPresenceNotice = async (char: CharacterProfile, course: StudyCourse, chapterIdx: number) => {
+        const chapterTitle = course.chapters[chapterIdx]?.title || '';
+        const content = `[系统: ${userProfile.name}进入了自习室，正在和${char.name}一起学习《${course.title}》的「${chapterTitle}」]`;
+        try {
+            await DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content });
+            markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        } catch (e) {
+            console.error('写入自习室提示失败', e);
+        }
+    };
+
     const startSession = (course: StudyCourse) => {
         trackEvent('进入课程课堂');
         setActiveCourse(course);
         setMode('classroom');
         setChatHistory([]);
-        
+
         // Find first incomplete chapter or stay on current if valid
         const nextIdx = course.chapters.findIndex(c => !c.isCompleted);
         const targetIdx = nextIdx === -1 ? 0 : nextIdx;
-        
+
         // Update index if needed
         if (targetIdx !== course.currentChapterIndex) {
              const updated = { ...course, currentChapterIndex: targetIdx };
@@ -638,7 +653,8 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
              DB.saveCourse(updated);
              setCourses(prev => prev.map(c => c.id === updated.id ? updated : c)); // Sync
         }
-        
+
+        if (selectedChar) postStudyPresenceNotice(selectedChar, course, targetIdx);
         handleTeach(course, targetIdx);
     };
 
@@ -1258,6 +1274,58 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
             addToast(`追问失败: ${e.message}`, 'error');
         } finally {
             setFollowUpLoading(false);
+        }
+    };
+
+    // 把本章目前的讲课内容 + Q&A 问答，让 AI 压缩成几句话的学习摘要发到角色聊天里。
+    // 不发原文（讲课稿+完整问答可能几千字，太占角色下一轮的上下文 token），只发摘要。
+    const handleSendStudyRecapToChat = async () => {
+        if (!activeCourse || !selectedChar || !effectiveApi.apiKey) return;
+        trackEvent('发送自习室记录给角色');
+        setIsSendingRecap(true);
+        try {
+            const chapter = activeCourse.chapters[activeCourse.currentChapterIndex];
+            const qaText = chatHistory.length > 0
+                ? chatHistory.map(h => `${h.role === 'user' ? userProfile.name : selectedChar.name}: ${h.content}`).join('\n')
+                : '（这节课还没有问答）';
+
+            const recapPrompt = `
+### Task: Summarize a study session
+Course: "${activeCourse.title}"
+Chapter: "${chapter.title}"
+Lecture content (for your reference only, do not quote it back verbatim):
+${(chapter.content || '').substring(0, 3000)}
+
+Q&A during this session:
+${qaText.substring(0, 3000)}
+
+Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just studied and asked about, from a neutral narrator's point of view (not in character). Mention concrete topics, not vague phrases like "学习了一些内容". No markdown, no preamble.`;
+
+            const response = await fetch(`${effectiveApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey}` },
+                body: JSON.stringify({
+                    model: effectiveApi.model,
+                    messages: [{ role: 'user', content: recapPrompt }],
+                    temperature: 0.5,
+                    max_tokens: 500,
+                })
+            });
+            if (!response.ok) throw new Error(`API Error: ${response.status}`);
+            const data = await safeResponseJson(response);
+            const recap = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim();
+            if (!recap) throw new Error('摘要生成为空');
+
+            const progress = Math.round((activeCourse.chapters.filter(c => c.isCompleted).length / activeCourse.chapters.length) * 100);
+            const content = `[系统: ${userProfile.name}在自习室学习《${activeCourse.title}》「${chapter.title}」的记录 (课程进度 ${progress}%)\n${recap}]`;
+
+            await DB.saveMessage({ charId: selectedChar.id, role: 'system', type: 'text', content });
+            markAmsgStateDirty({ char: selectedChar, userProfile, groups, realtimeConfig });
+            addToast('已把学习摘要发到聊天', 'success');
+        } catch (e: any) {
+            addToast(`发送失败: ${e.message}`, 'error');
+        } finally {
+            setIsSendingRecap(false);
         }
     };
 
@@ -1882,6 +1950,9 @@ Answer in character. Be helpful and clear. If they're confused about a concept, 
                             </button>
                             <button onClick={openQuizSetup} className="w-12 h-12 bg-amber-600/80 hover:bg-amber-500 text-white rounded-2xl font-bold border border-amber-400/30 active:scale-95 transition-all flex items-center justify-center" title="刷题">
                                 <Notepad size={24} />
+                            </button>
+                            <button onClick={handleSendStudyRecapToChat} disabled={isSendingRecap} className="w-12 h-12 bg-sky-600/80 hover:bg-sky-500 text-white rounded-2xl font-bold border border-sky-400/30 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40" title="把本节学习摘要发给角色">
+                                {isSendingRecap ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <PaperPlaneTilt size={22} />}
                             </button>
                             <button onClick={handleFinishChapter} className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/30 active:scale-95 transition-all flex items-center justify-center gap-2">
                                 下一章 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></svg>
