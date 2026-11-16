@@ -5,16 +5,21 @@ import { wgs84ToAmap } from './amapCoordinates';
 
 const fix = { latitude: 30, longitude: 120, accuracy: 10 };
 describe('AMap location adapter', () => {
-    it.each([['10001', 'Key 无效'], ['10009', 'Key 类型不匹配'], ['10005', '访问限制'], ['10003', '已超限'], ['unexpected', '没有返回有效地点']])('turns error %s into safe guidance without echoing the provider response', (infocode, hint) => {
+    it.each([['10001', 'Key 无效'], ['10009', 'Key 类型不匹配'], ['10005', '访问限制'], ['10003', '已超限'], ['10041', '没有该接口的权限'], ['10044', '已超限'], ['10045', '境外服务每日额度已超限'], ['unexpected', '没有返回有效地点']])('turns error %s into safe guidance without echoing the provider response', (infocode, hint) => {
         try { parseAmapLocation({ status: '0', infocode, info: 'SECRET-KEY-AND-COORDINATES' }); }
         catch (error: any) { expect(error.message).toContain(hint); expect(error.message).not.toContain('SECRET'); return; }
         throw new Error('must reject failed geocoding');
     });
     it('surfaces the raw AMap infocode so an unmapped/new error code is diagnosable, and omits it when absent', () => {
-        try { parseAmapLocation({ status: '0', infocode: '10044', info: 'SECRET' }); }
-        catch (error: any) { expect(error.message).toContain('10044'); expect(error.message).not.toContain('SECRET'); }
+        try { parseAmapLocation({ status: '0', infocode: '10099', info: 'SECRET' }); }
+        catch (error: any) { expect(error.message).toContain('10099'); expect(error.message).not.toContain('SECRET'); }
         try { parseAmapLocation({ status: '0' }); }
         catch (error: any) { expect(error.message).not.toContain('undefined'); expect(error.message).not.toContain('null'); }
+    });
+    it('distinguishes 10045 (overseas daily quota) from 10044 (account daily quota) so repeat hits abroad are not misread as a broken Key', () => {
+        try { parseAmapLocation({ status: '0', infocode: '10045' }); }
+        catch (error: any) { expect(error.message).toContain('境外'); return; }
+        throw new Error('must reject');
     });
     it('converts device coordinates on the client and constructs only the fixed callback endpoint', () => {
         const [lng, lat] = wgs84ToAmap(120, 30);

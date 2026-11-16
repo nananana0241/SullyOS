@@ -8,8 +8,13 @@ const AMAP_FAILURE_HINTS = {
     key: '高德 Key 无效、过期或已删除，请重新复制有效的 Key。',
     platform: '高德 Key 类型不匹配，请申请「Web服务」Key，不能用「Web端 JS API」。',
     restricted: '高德 Key 的访问限制或签名设置阻止了查询，请到高德控制台检查。',
-    permission: '这个高德 Key 没有该接口的权限，请到高德控制台检查 Web服务权限。',
+    permission: '这个高德 Key 没有该接口的权限，请到高德控制台检查 Web服务权限，或提交工单确认权限未过期。',
     quota: '高德查询次数或频率已超限，请稍后重试，或到高德控制台检查额度。',
+    // 高德把「境外」请求算成单独一个配额池，跟国内请求分开计且额度通常很小（infocode 10045，
+    // USER_ABROAD_DAILY_QUERY_OVER_LIMIT）。人在境外（或设备被判定为境外网络）查询几次就可能
+    // 触发，不是 Key 本身坏了，第二天配额重置后又能用——这类反复出现的情况要和普通 quota 分开提示，
+    // 否则用户会一直按「Key 坏了」去排查。
+    abroadQuota: '高德的境外服务每日额度已超限（这个额度和国内请求分开算，通常很小），请稍后或次日重试，或到高德控制台提升境外额度。',
     empty: '高德没有返回可用地址，请稍后重试。',
     network: '高德地点查询失败，请检查网络后重试。',
     response: '高德没有返回有效地点，请检查 Key 或稍后重试。',
@@ -30,8 +35,11 @@ function amapResponseError(data: any): AmapLocationError {
     if (is('10001', '10013')) return new AmapLocationError('key', code);
     if (is('10009')) return new AmapLocationError('platform', code);
     if (is('10005', '10006', '10007', '10008')) return new AmapLocationError('restricted', code);
-    if (is('10002', '10012')) return new AmapLocationError('permission', code);
-    if (is('10003', '10004', '10010', '10014')) return new AmapLocationError('quota', code);
+    if (is('10002', '10012', '10041')) return new AmapLocationError('permission', code);
+    // 10045 = USER_ABROAD_DAILY_QUERY_OVER_LIMIT，必须在 quota 判断之前单独拦截，否则会先被
+    // 下面更宽的 quota 分支吞掉（10044 账号总额超限归 quota 没问题，但 10045 是境外额度，原因不同）。
+    if (is('10045')) return new AmapLocationError('abroadQuota', code);
+    if (is('10003', '10004', '10010', '10014', '10044')) return new AmapLocationError('quota', code);
     return new AmapLocationError('response', code);
 }
 
