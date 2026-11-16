@@ -3889,6 +3889,28 @@ export interface StudyTutorPreset {
     prompt: string;
 }
 
+// --- EXAM PREP (自习室 · 考前冲刺) ---
+// 一个 ExamPrepSet = 一门考试：一份共用的考试范围/要求 + 若干份课件（PDF）。
+// 跟 StudyCourse（按章节循序教学）分开：这里不拆章节，每份课件单独进复习页，
+// AI 先按「这份课件 + 套餐的考试范围」讲考点，再可选出模拟题（复用现有 QuizSession 流程）。
+export interface ExamPrepMaterial {
+    id: string;
+    fileName: string;
+    rawText: string; // 从 PDF 提取的全文，不按章节切
+    addedAt: number;
+    /** AI 生成的考点讲解，缓存后进入复习页直接显示，避免每次重新生成。 */
+    examPoints?: string;
+}
+
+export interface ExamPrepSet {
+    id: string;
+    title: string; // 这门考试的名字，如"高等数学期末"
+    examScope: string; // 考试范围和要求，用户手填，整套共用
+    materials: ExamPrepMaterial[];
+    createdAt: number;
+    coverStyle: string;
+}
+
 // --- QUIZ / PRACTICE BOOK TYPES ---
 export interface QuizQuestionNote {
     question: string;
@@ -4053,7 +4075,8 @@ export interface FullBackupData {
     roomTodos?: RoomTodo[]; 
     roomNotes?: RoomNote[];
     socialPosts?: SocialPost[]; 
-    courses?: StudyCourse[]; 
+    courses?: StudyCourse[];
+    examPrepSets?: ExamPrepSet[];
     games?: GameSession[];
     worldbooks?: Worldbook[]; 
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 

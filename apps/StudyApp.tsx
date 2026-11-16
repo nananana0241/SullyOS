@@ -2,12 +2,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { StudyCourse, StudyChapter, CharacterProfile, Message, UserProfile, APIConfig, StudyTutorPreset, QuizQuestion, QuizSession, QuizQuestionNote } from '../types';
+import { StudyCourse, StudyChapter, CharacterProfile, Message, UserProfile, APIConfig, StudyTutorPreset, QuizQuestion, QuizSession, QuizQuestionNote, ExamPrepSet, ExamPrepMaterial } from '../types';
 import { ContextBuilder } from '../utils/context';
 import Modal from '../components/os/Modal';
 import { safeResponseJson, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
-import { Notepad, Check, X, CheckCircle, XCircle, Hand, PaperPlaneTilt } from '@phosphor-icons/react';
+import { Notepad, Check, X, CheckCircle, XCircle, Hand, PaperPlaneTilt, Exam, GraduationCap } from '@phosphor-icons/react';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
@@ -307,7 +307,7 @@ const BlackboardRenderer: React.FC<{ text: string, isTyping?: boolean, katexRend
 
 const StudyApp: React.FC = () => {
     const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, characterGroups, groups, realtimeConfig } = useOS();
-    const [mode, setMode] = useState<'bookshelf' | 'classroom' | 'quiz' | 'quiz_review' | 'practice_book'>('bookshelf');
+    const [mode, setMode] = useState<'bookshelf' | 'classroom' | 'quiz' | 'quiz_review' | 'practice_book' | 'exam_list' | 'exam_detail' | 'exam_review'>('bookshelf');
     const [courses, setCourses] = useState<StudyCourse[]>([]);
     const [activeCourse, setActiveCourse] = useState<StudyCourse | null>(null);
     const [selectedChar, setSelectedChar] = useState<CharacterProfile | null>(null);
@@ -363,6 +363,10 @@ const StudyApp: React.FC = () => {
     const [quizLoading, setQuizLoading] = useState<string>(''); // loading status text, empty = not loading
     const [quizUserAnswers, setQuizUserAnswers] = useState<Record<string, string>>({});
     const [quizShowSetup, setQuizShowSetup] = useState(false);
+    // 刷题/批改页「返回」按钮回哪：课堂页出题走 'classroom'，考前冲刺的单份课件复习页出题走 'exam_review'。
+    const [quizReturnMode, setQuizReturnMode] = useState<'classroom' | 'exam_review'>('classroom');
+    // openQuizSetup 打开设置弹窗时记录这次出题的素材来源（标题 + 全文），出题时读这里而不是 activeCourse。
+    const [quizSourceOverride, setQuizSourceOverride] = useState<{ courseId: string; chapterId: string; chapterTitle: string; courseTitle: string; rawText: string; examScope?: string } | null>(null);
     const [quizTypes, setQuizTypes] = useState<('choice' | 'true_false' | 'fill_blank')[]>(['choice', 'true_false', 'fill_blank']);
     const [quizCount, setQuizCount] = useState(8);
     // Practice Book State
@@ -374,6 +378,25 @@ const StudyApp: React.FC = () => {
     const [followUpInput, setFollowUpInput] = useState('');
     const [followUpLoading, setFollowUpLoading] = useState(false);
     const [isSendingRecap, setIsSendingRecap] = useState(false); // 「发送给角色」摘要生成中
+
+    // --- Exam Prep (自习室 · 考前冲刺) State ---
+    const [examPrepSets, setExamPrepSets] = useState<ExamPrepSet[]>([]);
+    const [activeExamSet, setActiveExamSet] = useState<ExamPrepSet | null>(null);
+    const [activeExamMaterial, setActiveExamMaterial] = useState<ExamPrepMaterial | null>(null);
+    const [examPointsLoading, setExamPointsLoading] = useState(false);
+    const [examQaInput, setExamQaInput] = useState('');
+    const [examQaHistory, setExamQaHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+    const [examQaLoading, setExamQaLoading] = useState(false);
+    // 新建套餐表单
+    const [showNewExamSetModal, setShowNewExamSetModal] = useState(false);
+    const [newExamTitle, setNewExamTitle] = useState('');
+    const [newExamScope, setNewExamScope] = useState('');
+    const examMaterialInputRef = useRef<HTMLInputElement>(null);
+    const [isAddingMaterial, setIsAddingMaterial] = useState(false);
+    const [deleteExamSetTarget, setDeleteExamSetTarget] = useState<ExamPrepSet | null>(null);
+    const [deleteExamMaterialTarget, setDeleteExamMaterialTarget] = useState<ExamPrepMaterial | null>(null);
+    const [editingExamScope, setEditingExamScope] = useState(false);
+    const [examScopeDraft, setExamScopeDraft] = useState('');
 
     const currentSprite = selectedChar?.sprites?.['normal'] || selectedChar?.avatar;
 
@@ -450,6 +473,11 @@ const StudyApp: React.FC = () => {
     const loadCourses = async () => {
         const list = await DB.getAllCourses();
         setCourses(list.sort((a,b) => b.createdAt - a.createdAt));
+    };
+
+    const loadExamPrepSets = async () => {
+        const list = await DB.getAllExamPrepSets();
+        setExamPrepSets(list.sort((a, b) => b.createdAt - a.createdAt));
     };
 
     const saveStudyApi = () => {
@@ -623,11 +651,10 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
 
     // --- Classroom Logic ---
 
-    // 进课堂时往角色聊天里插一条「正在自习室学习」的系统提示，让角色（和用户自己翻聊天记录时）
-    // 知道这段时间在自习室做什么，不用用户自己转述。只带课程名+章节名，不带原文，省 token。
-    const postStudyPresenceNotice = async (char: CharacterProfile, course: StudyCourse, chapterIdx: number) => {
-        const chapterTitle = course.chapters[chapterIdx]?.title || '';
-        const content = `[系统: ${userProfile.name}进入了自习室，正在和${char.name}一起学习《${course.title}》的「${chapterTitle}」]`;
+    // 进课堂/考前冲刺复习页时往角色聊天里插一条「正在自习室学习」的系统提示，让角色（和用户自己
+    // 翻聊天记录时）知道这段时间在自习室做什么，不用用户自己转述。只带标题，不带课件/讲课原文，省 token。
+    const postStudyPresenceNotice = async (char: CharacterProfile, activityLabel: string) => {
+        const content = `[系统: ${userProfile.name}进入了自习室，正在和${char.name}一起学习${activityLabel}]`;
         try {
             await DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content });
             markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
@@ -654,7 +681,10 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
              setCourses(prev => prev.map(c => c.id === updated.id ? updated : c)); // Sync
         }
 
-        if (selectedChar) postStudyPresenceNotice(selectedChar, course, targetIdx);
+        if (selectedChar) {
+            const chapterTitle = course.chapters[targetIdx]?.title || '';
+            postStudyPresenceNotice(selectedChar, `《${course.title}》的「${chapterTitle}」`);
+        }
         handleTeach(course, targetIdx);
     };
 
@@ -950,22 +980,33 @@ Note: Use "我" (I) to refer to yourself.
 
     const openQuizSetup = () => {
         if (!activeCourse) return;
+        setQuizReturnMode('classroom');
+        setQuizSourceOverride(null); // 用 activeCourse 当前章节当素材
         setQuizShowSetup(true);
     };
 
     const generateQuiz = async () => {
-        if (!activeCourse || !selectedChar || !effectiveApi.apiKey) return;
+        // 课堂出题：素材是 activeCourse 当前章节的一段切片；考前冲刺出题：quizSourceOverride
+        // 已经是某份课件的全文，不再按章节切。两条路径共用下面的出题逻辑。
+        const chapter = activeCourse ? activeCourse.chapters[activeCourse.currentChapterIndex] : null;
+        const source = quizSourceOverride || (activeCourse && chapter ? {
+            courseId: activeCourse.id, chapterId: chapter.id, chapterTitle: chapter.title,
+            courseTitle: activeCourse.title, rawText: activeCourse.rawText,
+        } : null);
+        if (!source || !selectedChar || !effectiveApi.apiKey) return;
         trackEvent('开始刷题', { types: [...quizTypes].sort().join('+') });
         setQuizShowSetup(false);
         setMode('quiz');
         setQuizLoading('正在生成试题...');
         setQuizUserAnswers({});
 
-        const chapter = activeCourse.chapters[activeCourse.currentChapterIndex];
-        const totalLen = activeCourse.rawText.length;
-        const chunkSize = Math.floor(totalLen / activeCourse.chapters.length);
-        const start = activeCourse.currentChapterIndex * chunkSize;
-        const chunkText = activeCourse.rawText.substring(start, start + chunkSize + 2000);
+        // 课堂出题仍按章节切一段，避免整本书都喂进去；考前冲刺的 rawText 本身就是单份课件全文，不切。
+        const chunkText = quizSourceOverride ? source.rawText : (() => {
+            const totalLen = source.rawText.length;
+            const chunkSize = Math.floor(totalLen / (activeCourse!.chapters.length || 1));
+            const start = activeCourse!.currentChapterIndex * chunkSize;
+            return source.rawText.substring(start, start + chunkSize + 2000);
+        })();
 
         const typeLabels: Record<string, string> = {
             choice: '选择题 (4个选项，单选)',
@@ -977,7 +1018,7 @@ Note: Use "我" (I) to refer to yourself.
         const prompt = `### Task: Generate Quiz Questions
 You are creating a quiz based on the following study material.
 
-**Chapter**: "${chapter.title}"
+**Chapter**: "${source.chapterTitle}"${source.examScope ? `\n**Exam scope/requirements** (weight questions toward what this actually covers): "${source.examScope}"` : ''}
 **Source Material**:
 ${chunkText.substring(0, 10000)}
 
@@ -1051,10 +1092,10 @@ ${chunkText.substring(0, 10000)}
 
             const session: QuizSession = {
                 id: `quiz-${Date.now()}`,
-                courseId: activeCourse.id,
-                chapterId: chapter.id,
-                chapterTitle: chapter.title,
-                courseTitle: activeCourse.title,
+                courseId: source.courseId,
+                chapterId: source.chapterId,
+                chapterTitle: source.chapterTitle,
+                courseTitle: source.courseTitle,
                 questions,
                 score: 0,
                 totalQuestions: questions.length,
@@ -1070,7 +1111,7 @@ ${chunkText.substring(0, 10000)}
             console.error('Quiz generation error:', e);
             addToast(`试题生成失败: ${e.message}`, 'error');
             setQuizLoading('');
-            setMode('classroom');
+            setMode(quizReturnMode === 'exam_review' ? 'exam_review' : 'classroom');
         }
     };
 
@@ -1196,6 +1237,7 @@ ${resultsText}
     };
 
     const resumeQuiz = (quiz: QuizSession) => {
+        setQuizReturnMode('classroom'); // 从练习册里打开的试卷，返回按钮回课堂，不回考前冲刺
         setQuizSession(quiz);
         if (quiz.status === 'graded') {
             setMode('quiz_review');
@@ -1329,6 +1371,57 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
         }
     };
 
+    // 跟 handleSendStudyRecapToChat 同一个目的：考前冲刺这边题量通常更大（考点讲解 + 一串追问），
+    // 一样压成 2-4 句摘要再发，不把课件原文/讲解全文甩给角色。
+    const handleSendExamRecapToChat = async () => {
+        if (!activeExamSet || !activeExamMaterial || !selectedChar || !effectiveApi.apiKey) return;
+        trackEvent('发送考前冲刺记录给角色');
+        setIsSendingRecap(true);
+        try {
+            const qaText = examQaHistory.length > 0
+                ? examQaHistory.map(h => `${h.role === 'user' ? userProfile.name : selectedChar.name}: ${h.content}`).join('\n')
+                : '（还没有追问）';
+
+            const recapPrompt = `
+### Task: Summarize an exam-prep review session
+Exam: "${activeExamSet.title}"
+Material: "${activeExamMaterial.fileName}"
+Exam points covered (for your reference only, do not quote it back verbatim):
+${(activeExamMaterial.examPoints || '').substring(0, 3000)}
+
+Q&A during this session:
+${qaText.substring(0, 3000)}
+
+Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just reviewed and asked about, from a
+neutral narrator's point of view (not in character). Mention concrete topics, not vague phrases like "复习了一些内容".
+No markdown, no preamble.`;
+
+            const response = await fetch(`${effectiveApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey}` },
+                body: JSON.stringify({
+                    model: effectiveApi.model,
+                    messages: [{ role: 'user', content: recapPrompt }],
+                    temperature: 0.5,
+                    max_tokens: 500,
+                })
+            });
+            if (!response.ok) throw new Error(`API Error: ${response.status}`);
+            const data = await safeResponseJson(response);
+            const recap = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim();
+            if (!recap) throw new Error('摘要生成为空');
+
+            const content = `[系统: ${userProfile.name}在自习室复习《${activeExamSet.title}》「${activeExamMaterial.fileName}」的记录\n${recap}]`;
+            await DB.saveMessage({ charId: selectedChar.id, role: 'system', type: 'text', content });
+            markAmsgStateDirty({ char: selectedChar, userProfile, groups, realtimeConfig });
+            addToast('已把复习摘要发到聊天', 'success');
+        } catch (e: any) {
+            addToast(`发送失败: ${e.message}`, 'error');
+        } finally {
+            setIsSendingRecap(false);
+        }
+    };
+
     // Send quiz result card to chat
     const sendQuizCardToChat = async (session: QuizSession) => {
         if (!selectedChar) return;
@@ -1351,6 +1444,234 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
             content: JSON.stringify(cardData),
             metadata: { scoreCard: cardData },
         });
+    };
+
+    // --- Exam Prep (自习室 · 考前冲刺) Logic ---
+
+    const handleCreateExamSet = async () => {
+        if (!newExamTitle.trim()) return;
+        const set: ExamPrepSet = {
+            id: `exam-${Date.now()}`,
+            title: newExamTitle.trim(),
+            examScope: newExamScope.trim(),
+            materials: [],
+            createdAt: Date.now(),
+            coverStyle: GRADIENTS[Math.floor(Math.random() * GRADIENTS.length)],
+        };
+        await DB.saveExamPrepSet(set);
+        trackEvent('创建考前冲刺套餐');
+        setShowNewExamSetModal(false);
+        setNewExamTitle('');
+        setNewExamScope('');
+        await loadExamPrepSets();
+    };
+
+    const requestDeleteExamSet = (e: React.MouseEvent, set: ExamPrepSet) => {
+        e.stopPropagation();
+        setDeleteExamSetTarget(set);
+    };
+
+    const confirmDeleteExamSet = async () => {
+        if (!deleteExamSetTarget) return;
+        await DB.deleteExamPrepSet(deleteExamSetTarget.id);
+        setExamPrepSets(prev => prev.filter(s => s.id !== deleteExamSetTarget.id));
+        setDeleteExamSetTarget(null);
+        trackEvent('删除考前冲刺套餐');
+        addToast('已删除', 'success');
+    };
+
+    const openExamSet = (set: ExamPrepSet) => {
+        trackEvent('打开考前冲刺套餐');
+        setActiveExamSet(set);
+        setExamScopeDraft(set.examScope);
+        setEditingExamScope(false);
+        setMode('exam_detail');
+    };
+
+    const saveExamScopeEdit = async () => {
+        if (!activeExamSet) return;
+        const updated = { ...activeExamSet, examScope: examScopeDraft.trim() };
+        await DB.saveExamPrepSet(updated);
+        setActiveExamSet(updated);
+        setExamPrepSets(prev => prev.map(s => s.id === updated.id ? updated : s));
+        setEditingExamScope(false);
+        addToast('考试范围已更新', 'success');
+    };
+
+    const handleAddExamMaterial = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !activeExamSet) return;
+        if (!isPdfFile(file)) {
+            addToast('请上传 PDF 文件', 'error');
+            if (examMaterialInputRef.current) examMaterialInputRef.current.value = '';
+            return;
+        }
+        trackEvent('向考前冲刺套餐添加课件');
+        setIsAddingMaterial(true);
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const { text: fullText, pageCount } = await extractPdfText(arrayBuffer, { maxPages: 50 });
+            if (fullText.trim().length < 50 && pageCount > 0) {
+                addToast('检测到文本极少，可能是扫描件/图片PDF。', 'error');
+            }
+            const material: ExamPrepMaterial = {
+                id: `mat-${Date.now()}`,
+                fileName: file.name.replace(/\.pdf$/i, ''),
+                rawText: fullText,
+                addedAt: Date.now(),
+            };
+            const updated = { ...activeExamSet, materials: [...activeExamSet.materials, material] };
+            await DB.saveExamPrepSet(updated);
+            setActiveExamSet(updated);
+            setExamPrepSets(prev => prev.map(s => s.id === updated.id ? updated : s));
+            addToast('课件已添加', 'success');
+        } catch (e: any) {
+            addToast(`处理失败: ${e.message}`, 'error');
+        } finally {
+            setIsAddingMaterial(false);
+            if (examMaterialInputRef.current) examMaterialInputRef.current.value = '';
+        }
+    };
+
+    const requestDeleteExamMaterial = (e: React.MouseEvent, material: ExamPrepMaterial) => {
+        e.stopPropagation();
+        setDeleteExamMaterialTarget(material);
+    };
+
+    const confirmDeleteExamMaterial = async () => {
+        if (!activeExamSet || !deleteExamMaterialTarget) return;
+        const updated = { ...activeExamSet, materials: activeExamSet.materials.filter(m => m.id !== deleteExamMaterialTarget.id) };
+        await DB.saveExamPrepSet(updated);
+        setActiveExamSet(updated);
+        setExamPrepSets(prev => prev.map(s => s.id === updated.id ? updated : s));
+        setDeleteExamMaterialTarget(null);
+        trackEvent('删除考前冲刺课件');
+        addToast('课件已删除', 'success');
+    };
+
+    // 点进某份课件开始复习：有缓存的考点讲解直接显示，没有就先让 AI 生成一份
+    // （课件内容 + 套餐的考试范围/要求），缓存后下次不用重新花钱生成。
+    const openExamMaterial = async (material: ExamPrepMaterial, skipPresenceNotice: boolean = false) => {
+        trackEvent('开始复习单份课件');
+        setActiveExamMaterial(material);
+        setExamQaHistory([]);
+        setExamQaInput('');
+        setMode('exam_review');
+        // 重新生成考点时不用再发一遍提示——已经在这份课件的复习页里，角色已经知道了
+        if (!skipPresenceNotice && selectedChar && activeExamSet) {
+            postStudyPresenceNotice(selectedChar, `《${activeExamSet.title}》的「${material.fileName}」`);
+        }
+        if (material.examPoints) return;
+        if (!selectedChar || !effectiveApi.apiKey || !activeExamSet) return;
+        setExamPointsLoading(true);
+        try {
+            await injectMemoryPalace(selectedChar, undefined, material.fileName);
+            const prompt = `
+### [System: Exam Prep Mode]
+You are helping ${userProfile.name} cram for an exam by walking through one piece of exam material.
+
+### Exam scope and requirements
+${activeExamSet.examScope || '(用户没有填写具体范围，按材料本身的重点讲)'}
+
+### Material: "${material.fileName}"
+${material.rawText.substring(0, 12000)}
+
+### Task
+Stay in character (as defined above). Based STRICTLY on the exam scope/requirements and the material above,
+explain what's actually likely to be tested — call out the key points, formulas, dates, definitions, whatever
+this material covers that matches the exam scope. Skip content the scope doesn't cover. Use Markdown: **bold**
+for key terms, lists for enumerated points, math with $...$ / $$...$$ if relevant. End with a short reminder of
+what to focus memorizing.`;
+            const response = await fetch(`${effectiveApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey}` },
+                body: JSON.stringify({
+                    model: effectiveApi.model,
+                    messages: await ContextBuilder.buildCharacterRequest({ char: selectedChar, user: userProfile }, [{ role: 'user', content: prompt }]),
+                    temperature: 0.6,
+                    max_tokens: 8000,
+                })
+            });
+            if (!response.ok) throw new Error(`API Error: ${response.status}`);
+            const data = await safeResponseJson(response);
+            const text = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '';
+            if (!text) throw new Error('模型返回内容为空');
+
+            const updatedMaterial = { ...material, examPoints: text };
+            const updatedSet = { ...activeExamSet, materials: activeExamSet.materials.map(m => m.id === material.id ? updatedMaterial : m) };
+            await DB.saveExamPrepSet(updatedSet);
+            setActiveExamSet(updatedSet);
+            setActiveExamMaterial(updatedMaterial);
+            setExamPrepSets(prev => prev.map(s => s.id === updatedSet.id ? updatedSet : s));
+        } catch (e: any) {
+            addToast(`考点生成失败: ${e.message}`, 'error');
+        } finally {
+            setExamPointsLoading(false);
+        }
+    };
+
+    const handleRegenerateExamPoints = () => {
+        if (!activeExamMaterial) return;
+        const { examPoints, ...rest } = activeExamMaterial;
+        openExamMaterial(rest as ExamPrepMaterial, true);
+    };
+
+    const handleExamQa = async () => {
+        if (!examQaInput.trim() || !activeExamMaterial || !activeExamSet || !selectedChar || !effectiveApi.apiKey) return;
+        const question = examQaInput.trim();
+        setExamQaInput('');
+        setExamQaHistory(prev => [...prev, { role: 'user', content: question }]);
+        setExamQaLoading(true);
+        try {
+            await injectMemoryPalace(selectedChar, undefined, question);
+            const prompt = `
+### [System: Exam Prep Q&A]
+${userProfile.name} is cramming for an exam and asking about material "${activeExamMaterial.fileName}".
+
+### Exam scope and requirements
+${activeExamSet.examScope || '(未填写)'}
+
+### Material
+${activeExamMaterial.rawText.substring(0, 10000)}
+
+### Question
+"${question}"
+
+Answer in character. Be helpful, clear, and exam-focused. Use Markdown.`;
+            const response = await fetch(`${effectiveApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey}` },
+                body: JSON.stringify({
+                    model: effectiveApi.model,
+                    messages: await ContextBuilder.buildCharacterRequest({ char: selectedChar, user: userProfile, includeDetailedMemories: true }, [{ role: 'user', content: prompt }]),
+                    temperature: 0.7,
+                    max_tokens: 6000,
+                })
+            });
+            if (!response.ok) throw new Error(`API Error: ${response.status}`);
+            const data = await safeResponseJson(response);
+            const text = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '（无回答）';
+            setExamQaHistory(prev => [...prev, { role: 'assistant', content: text }]);
+        } catch (e: any) {
+            addToast(`提问失败: ${e.message}`, 'error');
+        } finally {
+            setExamQaLoading(false);
+        }
+    };
+
+    // 考前冲刺的「出模拟题」复用现有刷题界面：素材是当前课件全文 + 套餐的考试范围。
+    const openExamQuizSetup = () => {
+        if (!activeExamMaterial || !activeExamSet) return;
+        setQuizReturnMode('exam_review');
+        setQuizSourceOverride({
+            courseId: activeExamSet.id,
+            chapterId: activeExamMaterial.id,
+            chapterTitle: activeExamMaterial.fileName,
+            courseTitle: activeExamSet.title,
+            rawText: activeExamMaterial.rawText,
+            examScope: activeExamSet.examScope,
+        });
+        setQuizShowSetup(true);
     };
 
     // --- Render ---
@@ -1432,7 +1753,7 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
 
                 {/* Header */}
                 <div className="bg-[#1a1a1a]/80 backdrop-blur-md px-4 pb-4 flex items-center justify-between z-30 border-b border-white/10" style={{ paddingTop: 'max(1rem, var(--safe-top))' }}>
-                    <button onClick={() => { setMode('classroom'); setReviewingQuiz(null); }} className="bg-black/30 text-white/80 p-2 rounded-full hover:bg-black/50 transition-colors border border-white/10">
+                    <button onClick={() => { setMode(quizReturnMode === 'exam_review' ? 'exam_review' : 'classroom'); setReviewingQuiz(null); }} className="bg-black/30 text-white/80 p-2 rounded-full hover:bg-black/50 transition-colors border border-white/10">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                     </button>
                     <div className="text-center">
@@ -1545,8 +1866,8 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
 
                 {/* Bottom Bar */}
                 <div className="absolute bottom-0 w-full bg-[#1a1a1a]/95 backdrop-blur-xl border-t border-white/10 p-4 z-30 pb-safe">
-                    <button onClick={() => { setMode('classroom'); setReviewingQuiz(null); }} className="w-full h-12 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/30 active:scale-95 transition-all">
-                        返回课堂
+                    <button onClick={() => { setMode(quizReturnMode === 'exam_review' ? 'exam_review' : 'classroom'); setReviewingQuiz(null); }} className="w-full h-12 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/30 active:scale-95 transition-all">
+                        {quizReturnMode === 'exam_review' ? '返回课件' : '返回课堂'}
                     </button>
                 </div>
             </div>
@@ -1567,7 +1888,7 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
                                     const updated = { ...quizSession, questions: quizSession.questions.map(q => ({ ...q, userAnswer: quizUserAnswers[q.id] || q.userAnswer })) };
                                     DB.saveQuiz(updated);
                                 }
-                                setMode('classroom');
+                                setMode(quizReturnMode === 'exam_review' ? 'exam_review' : 'classroom');
                             }} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                             </button>
@@ -1676,6 +1997,9 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
                         <div className="flex gap-1">
                             <button onClick={() => { trackEvent('打开练习册'); loadQuizzes(); setMode('practice_book'); }} className="p-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform" title="练习册">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-slate-500"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" /></svg>
+                            </button>
+                            <button onClick={() => { trackEvent('打开考前冲刺'); loadExamPrepSets(); setMode('exam_list'); }} className="p-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform" title="考前冲刺">
+                                <Exam size={20} className="text-slate-500" />
                             </button>
                             <button onClick={() => { trackEvent('打开自习室设置'); setShowStudySettings(true); }} className="p-2 -mr-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-slate-500"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
@@ -1853,6 +2177,268 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
         );
     }
 
+    // EXAM PREP · LIST VIEW
+    if (mode === 'exam_list') {
+        return (
+            <div className="h-full w-full bg-[#fdfbf7] flex flex-col font-sans relative">
+                <div className="bg-[#fdfbf7]/90 backdrop-blur-md border-b border-[#e5e5e5] shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="flex items-center px-6 py-3">
+                        <div className="flex justify-between items-center w-full">
+                            <button onClick={() => setMode('bookshelf')} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                            </button>
+                            <span className="font-bold text-slate-800 text-lg tracking-wide">考前冲刺</span>
+                            <button onClick={() => { setNewExamTitle(''); setNewExamScope(''); setShowNewExamSetModal(true); }} className="p-2 -mr-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-slate-500"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-6 flex-1 overflow-y-auto no-scrollbar">
+                    {examPrepSets.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                            <Exam size={48} className="mb-4 text-slate-400" />
+                            <span className="text-sm">还没有考试复习套餐</span>
+                            <span className="text-xs mt-1">点右上角 + 建一个，填考试范围再上传课件</span>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {examPrepSets.map(set => (
+                                <div key={set.id} onClick={() => openExamSet(set)} className="rounded-2xl p-4 shadow-md relative overflow-hidden cursor-pointer active:scale-[0.98] transition-transform" style={{ background: set.coverStyle }}>
+                                    <div className="relative z-10 text-white">
+                                        <div className="font-serif font-bold text-base">{set.title}</div>
+                                        <div className="text-xs opacity-80 mt-1">{set.materials.length} 份课件</div>
+                                        {set.examScope && <div className="text-[11px] opacity-70 mt-1 line-clamp-2">{set.examScope}</div>}
+                                    </div>
+                                    <button onClick={(e) => requestDeleteExamSet(e, set)} className="absolute top-2 right-2 bg-black/20 hover:bg-red-500 text-white w-7 h-7 rounded-full flex items-center justify-center backdrop-blur-md transition-all z-20">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <Modal isOpen={showNewExamSetModal} title="新建复习套餐" onClose={() => setShowNewExamSetModal(false)} footer={
+                    <button onClick={handleCreateExamSet} disabled={!newExamTitle.trim()} className="w-full py-3 bg-amber-500 text-white font-bold rounded-2xl disabled:opacity-40">创建</button>
+                }>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block">考试名称</label>
+                            <input value={newExamTitle} onChange={e => setNewExamTitle(e.target.value)} placeholder="如：高等数学期末" className="w-full bg-slate-50 rounded-xl px-4 py-3 text-sm border border-slate-200 focus:outline-amber-400" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block">考试范围和要求（整个套餐共用，之后还能改）</label>
+                            <textarea value={newExamScope} onChange={e => setNewExamScope(e.target.value)} rows={5} placeholder="如：第3-6章，重点公式推导，不考实验部分……" className="w-full bg-slate-50 rounded-xl px-4 py-3 text-sm border border-slate-200 focus:outline-amber-400 resize-none" />
+                        </div>
+                    </div>
+                </Modal>
+
+                <Modal isOpen={!!deleteExamSetTarget} title="删除套餐" onClose={() => setDeleteExamSetTarget(null)} footer={
+                    <div className="flex gap-2 w-full">
+                        <button onClick={() => setDeleteExamSetTarget(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl">取消</button>
+                        <button onClick={confirmDeleteExamSet} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">确认删除</button>
+                    </div>
+                }>
+                    <div className="py-4 text-center">
+                        <p className="text-sm text-slate-600 mb-2">确定要删除 <br/><span className="font-bold text-slate-800">"{deleteExamSetTarget?.title}"</span> 吗？</p>
+                        <p className="text-xs text-red-400">套餐内所有课件和已生成的考点讲解都会被删除。</p>
+                    </div>
+                </Modal>
+            </div>
+        );
+    }
+
+    // EXAM PREP · SET DETAIL VIEW（考试范围 + 课件列表）
+    if (mode === 'exam_detail' && activeExamSet) {
+        return (
+            <div className="h-full w-full bg-[#fdfbf7] flex flex-col font-sans relative">
+                <div className="bg-[#fdfbf7]/90 backdrop-blur-md border-b border-[#e5e5e5] shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="flex items-center px-6 py-3">
+                        <div className="flex justify-between items-center w-full">
+                            <button onClick={() => { setMode('exam_list'); setActiveExamSet(null); }} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                            </button>
+                            <span className="font-bold text-slate-800 text-sm tracking-wide truncate max-w-[200px]">{activeExamSet.title}</span>
+                            <div className="w-10" />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-6 flex-1 overflow-y-auto no-scrollbar space-y-6">
+                    <div>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase">考试范围和要求</label>
+                            {!editingExamScope && (
+                                <button onClick={() => { setExamScopeDraft(activeExamSet.examScope); setEditingExamScope(true); }} className="text-[11px] text-amber-500 font-bold">编辑</button>
+                            )}
+                        </div>
+                        {editingExamScope ? (
+                            <div className="space-y-2">
+                                <textarea value={examScopeDraft} onChange={e => setExamScopeDraft(e.target.value)} rows={5} className="w-full bg-slate-50 rounded-xl px-4 py-3 text-sm border border-slate-200 focus:outline-amber-400 resize-none" />
+                                <div className="flex gap-2">
+                                    <button onClick={() => setEditingExamScope(false)} className="flex-1 py-2 bg-slate-100 text-slate-500 text-xs font-bold rounded-xl">取消</button>
+                                    <button onClick={saveExamScopeEdit} className="flex-1 py-2 bg-amber-500 text-white text-xs font-bold rounded-xl">保存</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="bg-slate-50 rounded-xl px-4 py-3 text-sm text-slate-600 whitespace-pre-wrap">
+                                {activeExamSet.examScope || '（还没填，点右上角编辑）'}
+                            </div>
+                        )}
+                    </div>
+
+                    <div>
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">课件 ({activeExamSet.materials.length})</h3>
+                        <div className="space-y-2">
+                            {activeExamSet.materials.map(m => (
+                                <div key={m.id} onClick={() => openExamMaterial(m)} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center gap-3 cursor-pointer active:scale-[0.98] transition-transform">
+                                    <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+                                        <GraduationCap size={20} className="text-amber-500" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-sm font-bold text-slate-800 truncate">{m.fileName}</div>
+                                        <div className="text-[10px] text-slate-400 mt-0.5">{m.examPoints ? '已生成考点讲解' : '尚未复习'}</div>
+                                    </div>
+                                    <button onClick={(e) => requestDeleteExamMaterial(e, m)} className="p-2 text-slate-300 hover:text-red-400 transition-colors shrink-0">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>
+                                    </button>
+                                </div>
+                            ))}
+                            <button onClick={() => examMaterialInputRef.current?.click()} disabled={isAddingMaterial} className="w-full rounded-2xl border-2 border-dashed border-slate-300 flex items-center justify-center gap-2 text-slate-400 hover:border-amber-400 hover:text-amber-500 transition-colors bg-white py-4 disabled:opacity-50">
+                                {isAddingMaterial ? (
+                                    <div className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                                ) : (
+                                    <>
+                                        <span className="text-xl">+</span>
+                                        <span className="text-xs font-bold">添加课件 (PDF)</span>
+                                    </>
+                                )}
+                            </button>
+                            <input type="file" ref={examMaterialInputRef} className="hidden" accept=".pdf" onChange={handleAddExamMaterial} disabled={isAddingMaterial} />
+                        </div>
+                    </div>
+                </div>
+
+                <Modal isOpen={!!deleteExamMaterialTarget} title="删除课件" onClose={() => setDeleteExamMaterialTarget(null)} footer={
+                    <div className="flex gap-2 w-full">
+                        <button onClick={() => setDeleteExamMaterialTarget(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl">取消</button>
+                        <button onClick={confirmDeleteExamMaterial} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-2xl shadow-lg shadow-red-200">确认删除</button>
+                    </div>
+                }>
+                    <div className="py-4 text-center">
+                        <p className="text-sm text-slate-600 mb-2">确定要删除 <br/><span className="font-bold text-slate-800">"{deleteExamMaterialTarget?.fileName}"</span> 吗？</p>
+                    </div>
+                </Modal>
+            </div>
+        );
+    }
+
+    // EXAM PREP · SINGLE MATERIAL REVIEW VIEW
+    if (mode === 'exam_review' && activeExamMaterial && activeExamSet) {
+        return (
+            <div className="h-full w-full bg-[#2b2b2b] flex flex-col relative overflow-hidden font-sans">
+                <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
+
+                <div className="absolute top-0 w-full px-4 pb-4 flex justify-between z-30 pointer-events-none" style={{ paddingTop: 'max(1rem, var(--safe-top))' }}>
+                    <button onClick={() => setMode('exam_detail')} className="bg-black/30 text-white/80 p-2 rounded-full backdrop-blur-md hover:bg-black/50 transition-colors pointer-events-auto border border-white/10">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                    </button>
+                    <div className="bg-black/30 text-white/90 px-4 py-1.5 rounded-full backdrop-blur-md text-xs font-bold border border-white/10 shadow-sm pointer-events-auto truncate max-w-[200px]">
+                        {activeExamMaterial.fileName}
+                    </div>
+                    <button onClick={handleRegenerateExamPoints} disabled={examPointsLoading} className="bg-black/30 text-white/80 p-2 rounded-full backdrop-blur-md hover:bg-black/50 transition-colors pointer-events-auto border border-white/10 disabled:opacity-40" title="重新生成考点">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto no-scrollbar p-6 pt-20 pb-40 relative z-10">
+                    {examPointsLoading && !activeExamMaterial.examPoints ? (
+                        <div className="flex flex-col items-center justify-center h-64 gap-3 text-white/50">
+                            <div className="w-8 h-8 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                            <span className="text-sm">正在梳理考点...</span>
+                        </div>
+                    ) : (
+                        <BlackboardRenderer text={activeExamMaterial.examPoints || ''} katexRenderer={katexRenderer} />
+                    )}
+
+                    {examQaHistory.length > 0 && (
+                        <div className="mt-6 space-y-4 border-t border-white/10 pt-6">
+                            {examQaHistory.map((turn, i) => (
+                                <div key={i} className={turn.role === 'user' ? 'text-right' : ''}>
+                                    {turn.role === 'user' ? (
+                                        <div className="inline-block bg-amber-600/80 text-white text-sm rounded-2xl px-4 py-2 max-w-[85%]">{turn.content}</div>
+                                    ) : (
+                                        <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
+                                            <BlackboardRenderer text={turn.content} katexRenderer={katexRenderer} />
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {examQaLoading && <div className="text-white/40 text-xs mt-3">让我想想...</div>}
+                </div>
+
+                <div className="absolute bottom-0 w-full bg-[#1a1a1a]/95 backdrop-blur-xl border-t border-white/10 p-4 z-30 pb-safe space-y-2">
+                    <div className="w-full bg-white/10 rounded-2xl p-1 flex items-center border border-white/10">
+                        <input
+                            value={examQaInput}
+                            onChange={e => setExamQaInput(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleExamQa()}
+                            placeholder="问这份课件相关的问题..."
+                            className="flex-1 bg-transparent px-4 py-2 text-white text-sm outline-none placeholder:text-white/30"
+                            disabled={examQaLoading}
+                        />
+                        <button onClick={handleExamQa} disabled={examQaLoading || !examQaInput.trim()} className="bg-amber-500 text-white px-5 py-2 rounded-xl text-xs font-bold ml-2 shadow-sm disabled:opacity-40">发送</button>
+                    </div>
+                    <div className="flex gap-2">
+                        <button onClick={openExamQuizSetup} className="flex-1 h-11 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
+                            <Notepad size={18} /> 出模拟题考考自己
+                        </button>
+                        <button onClick={handleSendExamRecapToChat} disabled={isSendingRecap} className="w-11 h-11 bg-sky-600/80 hover:bg-sky-500 text-white rounded-2xl font-bold border border-sky-400/30 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40 shrink-0" title="把这份课件的复习摘要发给角色">
+                            {isSendingRecap ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <PaperPlaneTilt size={20} />}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Quiz Setup Modal（跟课堂页共用同一套刷题逻辑，素材来自 quizSourceOverride） */}
+                <Modal isOpen={quizShowSetup} title="刷题设置" onClose={() => setQuizShowSetup(false)} footer={
+                    <button onClick={generateQuiz} disabled={quizTypes.length === 0} className="w-full py-3 bg-amber-500 text-white font-bold rounded-2xl disabled:opacity-40">
+                        开始出题
+                    </button>
+                }>
+                    <div className="space-y-5">
+                        <div className="text-xs text-slate-500">
+                            课件: <span className="font-bold text-slate-700">{quizSourceOverride?.chapterTitle}</span>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block">题型选择</label>
+                            <div className="flex flex-wrap gap-2">
+                                {([['choice', '选择题'], ['true_false', '判断题'], ['fill_blank', '填空题']] as const).map(([val, label]) => {
+                                    const isOn = quizTypes.includes(val);
+                                    return (
+                                        <button key={val} onClick={() => setQuizTypes(prev => isOn ? prev.filter(t => t !== val) : [...prev, val])} className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${isOn ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                            {label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block">题目数量: {quizCount}</label>
+                            <input type="range" min={3} max={15} value={quizCount} onChange={e => setQuizCount(Number(e.target.value))} className="w-full accent-amber-500" />
+                            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+                                <span>3题</span><span>15题</span>
+                            </div>
+                        </div>
+                    </div>
+                </Modal>
+            </div>
+        );
+    }
+
     // CLASSROOM VIEW
     return (
         <div className="h-full w-full bg-[#2b2b2b] flex flex-col relative overflow-hidden font-sans">
@@ -1970,7 +2556,7 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
             }>
                 <div className="space-y-5">
                     <div className="text-xs text-slate-500">
-                        当前章节: <span className="font-bold text-slate-700">{activeCourse?.chapters[activeCourse?.currentChapterIndex || 0]?.title}</span>
+                        当前章节: <span className="font-bold text-slate-700">{quizSourceOverride?.chapterTitle || activeCourse?.chapters[activeCourse?.currentChapterIndex || 0]?.title}</span>
                     </div>
 
                     <div>
