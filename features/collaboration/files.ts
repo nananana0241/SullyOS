@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { extractPdfText, isPdfFile } from '../../utils/pdfText';
+import { extractDocxText } from '../../utils/docxText';
 import type {
   CollaborationArtifactFormat,
   CollaborationAttachment,
@@ -39,24 +40,6 @@ const clampExtractedText = (text: string): string => {
   return `${trimmed.slice(0, MAX_EXTRACTED_CHARS)}\n\n[文件内容过长，协同工作仅读取了前 ${MAX_EXTRACTED_CHARS.toLocaleString()} 个字符]`;
 };
 
-const extractDocxText = async (file: File): Promise<string> => {
-  const zip = await JSZip.loadAsync(await file.arrayBuffer());
-  const documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) throw new Error('没有在 Word 文件中找到正文');
-  const xml = new DOMParser().parseFromString(documentXml, 'application/xml');
-  if (xml.querySelector('parsererror')) throw new Error('Word 文件正文无法解析');
-  const paragraphs = Array.from(xml.getElementsByTagNameNS('*', 'p'));
-  return paragraphs.map(paragraph => {
-    const pieces: string[] = [];
-    Array.from(paragraph.getElementsByTagName('*')).forEach(node => {
-      const name = node.localName;
-      if (name === 't') pieces.push(node.textContent || '');
-      else if (name === 'tab') pieces.push('\t');
-      else if (name === 'br' || name === 'cr') pieces.push('\n');
-    });
-    return pieces.join('');
-  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-};
 
 export const extractSourceFile = async (
   file: File,

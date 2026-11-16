@@ -12,6 +12,7 @@ import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } fr
 import TokenImg from '../components/os/TokenImg';
 import { trackEvent } from '../utils/analytics';
 import { extractPdfText, isPdfFile } from '../utils/pdfText';
+import { extractDocxText, isDocxFile, isLegacyDocFile } from '../utils/docxText';
 import { markAmsgStateDirty } from '../utils/amsgStateSync';
 
 type KatexLike = {
@@ -531,29 +532,42 @@ const StudyApp: React.FC = () => {
         if (!file) return;
         // Android 的部分 DocumentsProvider 会给 PDF 空 MIME 或
         // application/octet-stream；扩展名正确时仍应允许进入解析器。
-        if (!isPdfFile(file)) {
-            addToast('请上传 PDF 文件', 'error');
+        if (isLegacyDocFile(file)) {
+            addToast('旧版 .doc 暂不支持，请先在 Word 里另存为 .docx', 'error');
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            return;
+        }
+        const isDocx = isDocxFile(file);
+        if (!isPdfFile(file) && !isDocx) {
+            addToast('请上传 PDF 或 Word (.docx) 文件', 'error');
+            if (fileInputRef.current) fileInputRef.current.value = '';
             return;
         }
 
-        trackEvent('导入 PDF 教材');
+        trackEvent('导入教材', { format: isDocx ? 'docx' : 'pdf' });
         setIsProcessing(true);
-        setProcessStatus('正在预处理 PDF...');
+        setProcessStatus(isDocx ? '正在读取 Word 文档...' : '正在预处理 PDF...');
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const { text: fullText, pageCount } = await extractPdfText(arrayBuffer, {
-                maxPages: 50,
-                onProgress: ({ page, totalPages }) => setProcessStatus(`提取文本中 (${page}/${totalPages})...`),
-            });
-
-            // Scanned PDF Detection
-            if (fullText.trim().length < 50 && pageCount > 0) {
-                addToast('检测到文本极少，可能是扫描件/图片PDF。建议先进行OCR识别。', 'error');
+            let fullText: string;
+            if (isDocx) {
+                fullText = await extractDocxText(file);
+                if (!fullText.trim()) throw new Error('这个 Word 文件没有可提取的正文');
+            } else {
+                const arrayBuffer = await file.arrayBuffer();
+                const result = await extractPdfText(arrayBuffer, {
+                    maxPages: 50,
+                    onProgress: ({ page, totalPages }) => setProcessStatus(`提取文本中 (${page}/${totalPages})...`),
+                });
+                fullText = result.text;
+                // Scanned PDF Detection
+                if (fullText.trim().length < 50 && result.pageCount > 0) {
+                    addToast('检测到文本极少，可能是扫描件/图片PDF。建议先进行OCR识别。', 'error');
+                }
             }
 
             // Set temp data and open modal
-            setTempPdfData({ name: file.name.replace('.pdf', ''), text: fullText });
+            setTempPdfData({ name: file.name.replace(/\.(pdf|docx)$/i, ''), text: fullText });
             setImportPreference('');
             setIsProcessing(false);
             setShowImportModal(true);
@@ -1501,22 +1515,35 @@ No markdown, no preamble.`;
     const handleAddExamMaterial = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file || !activeExamSet) return;
-        if (!isPdfFile(file)) {
-            addToast('请上传 PDF 文件', 'error');
+        if (isLegacyDocFile(file)) {
+            addToast('旧版 .doc 暂不支持，请先在 Word 里另存为 .docx', 'error');
             if (examMaterialInputRef.current) examMaterialInputRef.current.value = '';
             return;
         }
-        trackEvent('向考前冲刺套餐添加课件');
+        const isDocx = isDocxFile(file);
+        if (!isPdfFile(file) && !isDocx) {
+            addToast('请上传 PDF 或 Word (.docx) 文件', 'error');
+            if (examMaterialInputRef.current) examMaterialInputRef.current.value = '';
+            return;
+        }
+        trackEvent('向考前冲刺套餐添加课件', { format: isDocx ? 'docx' : 'pdf' });
         setIsAddingMaterial(true);
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const { text: fullText, pageCount } = await extractPdfText(arrayBuffer, { maxPages: 50 });
-            if (fullText.trim().length < 50 && pageCount > 0) {
-                addToast('检测到文本极少，可能是扫描件/图片PDF。', 'error');
+            let fullText: string;
+            if (isDocx) {
+                fullText = await extractDocxText(file);
+                if (!fullText.trim()) throw new Error('这个 Word 文件没有可提取的正文');
+            } else {
+                const arrayBuffer = await file.arrayBuffer();
+                const result = await extractPdfText(arrayBuffer, { maxPages: 50 });
+                fullText = result.text;
+                if (fullText.trim().length < 50 && result.pageCount > 0) {
+                    addToast('检测到文本极少，可能是扫描件/图片PDF。', 'error');
+                }
             }
             const material: ExamPrepMaterial = {
                 id: `mat-${Date.now()}`,
-                fileName: file.name.replace(/\.pdf$/i, ''),
+                fileName: file.name.replace(/\.(pdf|docx)$/i, ''),
                 rawText: fullText,
                 addedAt: Date.now(),
             };
@@ -2041,11 +2068,11 @@ Answer in character. Be helpful, clear, and exam-focused. Use Markdown.`;
                                 <>
                                     <span className="text-3xl">+</span>
                                     <span className="text-xs font-bold">导入学习资料</span>
-                                    <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF，让角色陪你讲解、练习</span>
+                                    <span className="px-3 text-center text-[10px] leading-relaxed">支持 PDF / Word，让角色陪你讲解、练习</span>
                                 </>
                             )}
                         </button>
-                        <input type="file" ref={fileInputRef} className="hidden" accept=".pdf" onChange={handleFileSelect} disabled={isProcessing} />
+                        <input type="file" ref={fileInputRef} className="hidden" accept=".pdf,.docx" onChange={handleFileSelect} disabled={isProcessing} />
 
                         {courses.map(course => (
                             <div key={course.id} onClick={() => startSession(course)} className="aspect-[3/4] rounded-r-xl rounded-l-sm shadow-md relative group cursor-pointer overflow-hidden transition-transform active:scale-95" style={{ background: course.coverStyle }}>
@@ -2312,11 +2339,11 @@ Answer in character. Be helpful, clear, and exam-focused. Use Markdown.`;
                                 ) : (
                                     <>
                                         <span className="text-xl">+</span>
-                                        <span className="text-xs font-bold">添加课件 (PDF)</span>
+                                        <span className="text-xs font-bold">添加课件 (PDF / Word)</span>
                                     </>
                                 )}
                             </button>
-                            <input type="file" ref={examMaterialInputRef} className="hidden" accept=".pdf" onChange={handleAddExamMaterial} disabled={isAddingMaterial} />
+                            <input type="file" ref={examMaterialInputRef} className="hidden" accept=".pdf,.docx" onChange={handleAddExamMaterial} disabled={isAddingMaterial} />
                         </div>
                     </div>
                 </div>
