@@ -15,17 +15,24 @@ const AMAP_FAILURE_HINTS = {
     response: '高德没有返回有效地点，请检查 Key 或稍后重试。',
 };
 export class AmapLocationError extends Error {
-    constructor(public readonly reason: keyof typeof AMAP_FAILURE_HINTS) { super(AMAP_FAILURE_HINTS[reason]); }
+    // code：高德原始 infocode（如 10044），不是 data.info 那段文字——info 字段原样回显请求参数，
+    // 不安全，不往外带；infocode 只是个固定错误码，带出来方便用户照着高德文档查到底是哪一类问题
+    // （尤其是下面这几类归类之外、新出现的码，旧版本只会提示一句看不出原因的「检查 Key 或稍后重试」）。
+    constructor(public readonly reason: keyof typeof AMAP_FAILURE_HINTS, public readonly code?: string) {
+        super(code ? `${AMAP_FAILURE_HINTS[reason]}（高德错误码 ${code}）` : AMAP_FAILURE_HINTS[reason]);
+    }
 }
 
 function amapResponseError(data: any): AmapLocationError {
-    const code = String(data?.infocode);
-    if (['10001', '10013'].includes(code)) return new AmapLocationError('key');
-    if (code === '10009') return new AmapLocationError('platform');
-    if (['10005', '10006', '10007', '10008'].includes(code)) return new AmapLocationError('restricted');
-    if (['10002', '10012'].includes(code)) return new AmapLocationError('permission');
-    if (['10003', '10004', '10010', '10014'].includes(code)) return new AmapLocationError('quota');
-    return new AmapLocationError('response');
+    const raw = data?.infocode;
+    const code: string | undefined = raw === undefined || raw === null ? undefined : String(raw);
+    const is = (...codes: string[]) => code !== undefined && codes.includes(code);
+    if (is('10001', '10013')) return new AmapLocationError('key', code);
+    if (is('10009')) return new AmapLocationError('platform', code);
+    if (is('10005', '10006', '10007', '10008')) return new AmapLocationError('restricted', code);
+    if (is('10002', '10012')) return new AmapLocationError('permission', code);
+    if (is('10003', '10004', '10010', '10014')) return new AmapLocationError('quota', code);
+    return new AmapLocationError('response', code);
 }
 
 export function buildAmapLocationUrl(fix: LocationFix, key: string): string {
