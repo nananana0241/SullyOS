@@ -651,11 +651,10 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
 
     // --- Classroom Logic ---
 
-    // 进课堂时往角色聊天里插一条「正在自习室学习」的系统提示，让角色（和用户自己翻聊天记录时）
-    // 知道这段时间在自习室做什么，不用用户自己转述。只带课程名+章节名，不带原文，省 token。
-    const postStudyPresenceNotice = async (char: CharacterProfile, course: StudyCourse, chapterIdx: number) => {
-        const chapterTitle = course.chapters[chapterIdx]?.title || '';
-        const content = `[系统: ${userProfile.name}进入了自习室，正在和${char.name}一起学习《${course.title}》的「${chapterTitle}」]`;
+    // 进课堂/考前冲刺复习页时往角色聊天里插一条「正在自习室学习」的系统提示，让角色（和用户自己
+    // 翻聊天记录时）知道这段时间在自习室做什么，不用用户自己转述。只带标题，不带课件/讲课原文，省 token。
+    const postStudyPresenceNotice = async (char: CharacterProfile, activityLabel: string) => {
+        const content = `[系统: ${userProfile.name}进入了自习室，正在和${char.name}一起学习${activityLabel}]`;
         try {
             await DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content });
             markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
@@ -682,7 +681,10 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
              setCourses(prev => prev.map(c => c.id === updated.id ? updated : c)); // Sync
         }
 
-        if (selectedChar) postStudyPresenceNotice(selectedChar, course, targetIdx);
+        if (selectedChar) {
+            const chapterTitle = course.chapters[targetIdx]?.title || '';
+            postStudyPresenceNotice(selectedChar, `《${course.title}》的「${chapterTitle}」`);
+        }
         handleTeach(course, targetIdx);
     };
 
@@ -1369,6 +1371,57 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
         }
     };
 
+    // 跟 handleSendStudyRecapToChat 同一个目的：考前冲刺这边题量通常更大（考点讲解 + 一串追问），
+    // 一样压成 2-4 句摘要再发，不把课件原文/讲解全文甩给角色。
+    const handleSendExamRecapToChat = async () => {
+        if (!activeExamSet || !activeExamMaterial || !selectedChar || !effectiveApi.apiKey) return;
+        trackEvent('发送考前冲刺记录给角色');
+        setIsSendingRecap(true);
+        try {
+            const qaText = examQaHistory.length > 0
+                ? examQaHistory.map(h => `${h.role === 'user' ? userProfile.name : selectedChar.name}: ${h.content}`).join('\n')
+                : '（还没有追问）';
+
+            const recapPrompt = `
+### Task: Summarize an exam-prep review session
+Exam: "${activeExamSet.title}"
+Material: "${activeExamMaterial.fileName}"
+Exam points covered (for your reference only, do not quote it back verbatim):
+${(activeExamMaterial.examPoints || '').substring(0, 3000)}
+
+Q&A during this session:
+${qaText.substring(0, 3000)}
+
+Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just reviewed and asked about, from a
+neutral narrator's point of view (not in character). Mention concrete topics, not vague phrases like "复习了一些内容".
+No markdown, no preamble.`;
+
+            const response = await fetch(`${effectiveApi.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${effectiveApi.apiKey}` },
+                body: JSON.stringify({
+                    model: effectiveApi.model,
+                    messages: [{ role: 'user', content: recapPrompt }],
+                    temperature: 0.5,
+                    max_tokens: 500,
+                })
+            });
+            if (!response.ok) throw new Error(`API Error: ${response.status}`);
+            const data = await safeResponseJson(response);
+            const recap = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').trim();
+            if (!recap) throw new Error('摘要生成为空');
+
+            const content = `[系统: ${userProfile.name}在自习室复习《${activeExamSet.title}》「${activeExamMaterial.fileName}」的记录\n${recap}]`;
+            await DB.saveMessage({ charId: selectedChar.id, role: 'system', type: 'text', content });
+            markAmsgStateDirty({ char: selectedChar, userProfile, groups, realtimeConfig });
+            addToast('已把复习摘要发到聊天', 'success');
+        } catch (e: any) {
+            addToast(`发送失败: ${e.message}`, 'error');
+        } finally {
+            setIsSendingRecap(false);
+        }
+    };
+
     // Send quiz result card to chat
     const sendQuizCardToChat = async (session: QuizSession) => {
         if (!selectedChar) return;
@@ -1498,12 +1551,16 @@ Write a SHORT summary (2-4 sentences, Chinese) of what ${userProfile.name} just 
 
     // 点进某份课件开始复习：有缓存的考点讲解直接显示，没有就先让 AI 生成一份
     // （课件内容 + 套餐的考试范围/要求），缓存后下次不用重新花钱生成。
-    const openExamMaterial = async (material: ExamPrepMaterial) => {
+    const openExamMaterial = async (material: ExamPrepMaterial, skipPresenceNotice: boolean = false) => {
         trackEvent('开始复习单份课件');
         setActiveExamMaterial(material);
         setExamQaHistory([]);
         setExamQaInput('');
         setMode('exam_review');
+        // 重新生成考点时不用再发一遍提示——已经在这份课件的复习页里，角色已经知道了
+        if (!skipPresenceNotice && selectedChar && activeExamSet) {
+            postStudyPresenceNotice(selectedChar, `《${activeExamSet.title}》的「${material.fileName}」`);
+        }
         if (material.examPoints) return;
         if (!selectedChar || !effectiveApi.apiKey || !activeExamSet) return;
         setExamPointsLoading(true);
@@ -1556,7 +1613,7 @@ what to focus memorizing.`;
     const handleRegenerateExamPoints = () => {
         if (!activeExamMaterial) return;
         const { examPoints, ...rest } = activeExamMaterial;
-        openExamMaterial(rest as ExamPrepMaterial);
+        openExamMaterial(rest as ExamPrepMaterial, true);
     };
 
     const handleExamQa = async () => {
@@ -2336,9 +2393,14 @@ Answer in character. Be helpful, clear, and exam-focused. Use Markdown.`;
                         />
                         <button onClick={handleExamQa} disabled={examQaLoading || !examQaInput.trim()} className="bg-amber-500 text-white px-5 py-2 rounded-xl text-xs font-bold ml-2 shadow-sm disabled:opacity-40">发送</button>
                     </div>
-                    <button onClick={openExamQuizSetup} className="w-full h-11 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
-                        <Notepad size={18} /> 出模拟题考考自己
-                    </button>
+                    <div className="flex gap-2">
+                        <button onClick={openExamQuizSetup} className="flex-1 h-11 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl font-bold shadow-lg shadow-amber-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
+                            <Notepad size={18} /> 出模拟题考考自己
+                        </button>
+                        <button onClick={handleSendExamRecapToChat} disabled={isSendingRecap} className="w-11 h-11 bg-sky-600/80 hover:bg-sky-500 text-white rounded-2xl font-bold border border-sky-400/30 active:scale-95 transition-all flex items-center justify-center disabled:opacity-40 shrink-0" title="把这份课件的复习摘要发给角色">
+                            {isSendingRecap ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <PaperPlaneTilt size={20} />}
+                        </button>
+                    </div>
                 </div>
 
                 {/* Quiz Setup Modal（跟课堂页共用同一套刷题逻辑，素材来自 quizSourceOverride） */}
