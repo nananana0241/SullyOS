@@ -10,6 +10,12 @@ describe('AMap location adapter', () => {
         catch (error: any) { expect(error.message).toContain(hint); expect(error.message).not.toContain('SECRET'); return; }
         throw new Error('must reject failed geocoding');
     });
+    it('surfaces the raw AMap infocode so an unmapped/new error code is diagnosable, and omits it when absent', () => {
+        try { parseAmapLocation({ status: '0', infocode: '10044', info: 'SECRET' }); }
+        catch (error: any) { expect(error.message).toContain('10044'); expect(error.message).not.toContain('SECRET'); }
+        try { parseAmapLocation({ status: '0' }); }
+        catch (error: any) { expect(error.message).not.toContain('undefined'); expect(error.message).not.toContain('null'); }
+    });
     it('converts device coordinates on the client and constructs only the fixed callback endpoint', () => {
         const [lng, lat] = wgs84ToAmap(120, 30);
         expect(lng).toBeCloseTo(120.00466044559735, 8); expect(lat).toBeCloseTo(29.997534331696095, 8);
