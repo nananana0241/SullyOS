@@ -55,6 +55,8 @@ export function buildCharacterImageBlock(
             lines.push('   - 不要在 tag 里写你的名字或"我"，直接描述画面本身。');
         } else {
             lines.push('   - 描述要具体：主体、动作、场景、光线、氛围。可以带上你此刻的心情。');
+            lines.push('   - **要逼真的生活抓拍感，而不是精修写真或摆拍**，按这个顺序想：拍摄方式（手机随手拍/第一视角）→ 具体场景（哪里、什么时候，越琐碎越真实）→ 1-2个有质感的细节（水汽、蒸汽、磨损、毛发纹理等）→ 人物只露局部别拍正脸（手、肩膀、脚、背影）→ 构图故意带点瑕疵（偏心构图、微微倾斜、轻微糊焦）→ 真实环境光（别写"电影级打光"，写"台灯""阴天""食堂的灯"）。');
+            lines.push('   - 结尾可以加一句：photorealistic, raw smartphone photography, grainy phone camera quality, imperfect focus, no beauty filter, no posing。');
         }
         if (style) lines.push(`   - **画风固定为：${style}**。不用在描述里重复画风，只写画面内容。`);
         if (appearance) {

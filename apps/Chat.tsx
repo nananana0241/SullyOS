@@ -2279,24 +2279,41 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         const lines = emojiImportText.split('\n');
         const targetCatId = activeCategory === 'default' ? undefined : activeCategory;
 
+        // 原来整批写在一个 for 循环里不带 try/catch：中间随便哪一张（比如那行格式有点歪、
+        // 或者单条写入触发了 IndexedDB 配额错误）一旦抛错，后面所有行全部跟着中断、
+        // 一个都不会再写进去，界面却照样弹"导入成功"——用户看到的就是"好像有数量上限"。
+        // 改成每行单独 try/catch，互不连累，最后把真实的成功/失败数报出来。
+        let succeeded = 0;
+        const failedNames: string[] = [];
+
         for (const line of lines) {
             const parts = line.split('--');
-            if (parts.length >= 2) {
-                const name = parts[0].trim();
-                const url = parts.slice(1).join('--').trim();
-                if (name && url) {
-                    // 粘进来的可能是 data: 图（复制粘贴的图片），也可能是图床外链。
-                    // 前者转成令牌只留二进制，后者是别人服务器上的地址，原样存。
-                    const stored = url.startsWith('data:') ? await migrateDataUrlToRef(url) : url;
-                    await DB.saveEmoji(name, stored, targetCatId);
-                }
+            if (parts.length < 2) continue;
+            const name = parts[0].trim();
+            const url = parts.slice(1).join('--').trim();
+            if (!name || !url) continue;
+            try {
+                // 粘进来的可能是 data: 图（复制粘贴的图片），也可能是图床外链。
+                // 前者转成令牌只留二进制，后者是别人服务器上的地址，原样存。
+                const stored = url.startsWith('data:') ? await migrateDataUrlToRef(url) : url;
+                await DB.saveEmoji(name, stored, targetCatId);
+                succeeded++;
+            } catch (e: any) {
+                console.warn('[表情注入] 一行导入失败', name, e);
+                failedNames.push(name);
             }
         }
         await loadEmojiData();
         markEmojiLibraryChanged();
         setModalType('none');
         setEmojiImportText('');
-        addToast('表情包导入成功', 'success');
+        if (failedNames.length === 0) {
+            addToast(`表情包导入成功（${succeeded} 个）`, 'success');
+        } else if (succeeded > 0) {
+            addToast(`导入完成：成功 ${succeeded} 个，失败 ${failedNames.length} 个（${failedNames.slice(0, 5).join('、')}${failedNames.length > 5 ? ' 等' : ''}）`, 'error');
+        } else {
+            addToast(`导入失败，${failedNames.length} 个全部没保存成功`, 'error');
+        }
     };
 
     const handleRenameCategory = async () => {
