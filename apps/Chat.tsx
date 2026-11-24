@@ -56,6 +56,7 @@ import { loadChatInputPreferences, saveChatInputPreferences } from '../utils/cha
 import InstantChatRouteNotice from '../components/chat/InstantChatRouteNotice';
 import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import FavoritesPortal from '../components/chat/VoiceFavoritesPortal';
+import ChatSearchPortal from '../components/chat/ChatSearchPortal';
 import ChatModals from '../components/chat/ChatModals';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
 import type { ChatCleanupPlan } from '../utils/chatHistoryCleanup';
@@ -178,6 +179,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     const [collaborationPreviewAssetId, setCollaborationPreviewAssetId] = useState<string | null>(null);
     const [memoryRepairOpen, setMemoryRepairOpen] = useState(false);
     const [favoritesOpen, setFavoritesOpen] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchMessages, setSearchMessages] = useState<Message[]>([]);
     
     // Emoji State
     const [emojis, setEmojis] = useState<Emoji[]>([]);
@@ -1775,7 +1778,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         if ([
             'transfer', 'archive', 'settings', 'chrome-css', 'chrome-sound', 'fine-tune',
             'meetup', 'proactive', 'active-msg-2', 'schedule', 'mcd-request', 'luckin-request',
-            'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites', 'collaboration',
+            'html-mode-toggle', 'html-mode-settings', 'thinking-settings', 'favorites', 'collaboration', 'search',
             // 独立小功能：点一下就是用了一次，跟「打开某个面板」同一性质。
             // send-emoji / select-category 这些是「挑哪一个」，不进名单。
             'poke', 'emoji-import', 'add-category', 'mcd-end', 'luckin-end',
@@ -1786,6 +1789,13 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             case 'collaboration': setShowPanel('none'); setCollaborationOpen(true); break;
             case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
             case 'favorites': setShowPanel('none'); setFavoritesOpen(true); break;
+            case 'search':
+                setShowPanel('none');
+                if (activeCharacterId) {
+                    DB.getMessagesByCharId(activeCharacterId, true).then(setSearchMessages);
+                }
+                setSearchOpen(true);
+                break;
             case 'transfer': setModalType('transfer'); break;
             case 'poke': handleSendText('[戳一戳]', 'interaction'); break;
             case 'archive': setModalType(char?.memoryPalaceEnabled ? 'archive-legacy-warning' : 'archive-settings'); break;
@@ -4597,6 +4607,16 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                     inline={!!homePhone}
                     onClose={() => setFavoritesOpen(false)}
                     onJumpToMessage={handleOpenFavoriteMessage}
+                />
+            )}
+
+            {searchOpen && char && (
+                <ChatSearchPortal
+                    messages={searchMessages}
+                    charName={char.name}
+                    hideSystemLogs={!!char.hideSystemLogs}
+                    onClose={() => setSearchOpen(false)}
+                    onJumpToMessage={(messageId) => { setSearchOpen(false); void handleJumpToMessageInChat(messageId); }}
                 />
             )}
 

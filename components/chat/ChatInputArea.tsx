@@ -1,7 +1,7 @@
 import EmojiExportDialog from './EmojiExportDialog';
 import ChatCamera from './ChatCamera';
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Lightning, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Alarm, Sparkle, FadersHorizontal, LinkSimple, Star, Briefcase, MagnifyingGlass } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import TokenImg from '../os/TokenImg';
@@ -649,6 +649,15 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
               <Star className="w-6 h-6" weight="fill" />
           </span>
           <span className="text-xs font-bold">收藏</span>
+        </button>,
+        <button key="search"
+          onClick={() => onPanelAction('search')}
+          className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}
+        >
+          <span className={`w-14 h-14 rounded-2xl grid place-items-center shadow-sm border ${acnh ? 'bg-white/70 border-[#e6dab4] text-[#4a7c8c]' : isDiscordStyle ? 'bg-slate-800 text-teal-300 border-teal-400/20' : 'bg-teal-50 text-teal-600 border-teal-100'}`}>
+              <MagnifyingGlass className="w-6 h-6" weight="bold" />
+          </span>
+          <span className="text-xs font-bold">搜索</span>
         </button>
     ].filter(tile=>!compactHome||['transfer','poke','image','reroll','memory-link','favorites'].includes(String(tile.key)));
     const actionPageCount = Math.max(1, Math.ceil(actionTiles.length / ACTION_PAGE_SIZE));
