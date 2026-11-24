@@ -2942,6 +2942,22 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
     },[char?.id,visibleCount,reloadMessages]);
 
     // --- Message Management ---
+    const handleRecallMessage = async () => {
+        if (!selectedMessage) return;
+        const recalledId = selectedMessage.id;
+        await DB.recallMessage(recalledId, 'user');
+        // 跟删除一样：撤回改变了这条消息在上下文里的样子（原文→撤回提示），
+        // 云端 fire_pack 快了的话也要打脏，否则角色到点主动消息时读到的还是旧快照。
+        markAmsgStateDirty({ char, userProfile, groups, realtimeConfig });
+        setMessages(prev => prev.map(m => m.id === recalledId
+            ? { ...m, metadata: { ...m.metadata, recalled: true, recalledBy: 'user', recalledAt: Date.now() } }
+            : m));
+        setModalType('none');
+        setSelectedMessage(null);
+        addToast('消息已撤回', 'success');
+        trackEvent('撤回一条消息');
+    };
+
     const handleDeleteMessage = async () => {
         if (!selectedMessage) return;
         const deletedId = selectedMessage.id;
@@ -3889,7 +3905,7 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 onCreatePrompt={createNewPrompt} onEditPrompt={editSelectedPrompt} onSavePrompt={handleSavePrompt} onDeletePrompt={handleDeletePrompt}
                 onSetHistoryStart={handleSetHistoryStart} onRestoreAdaptiveContext={restoreAdaptiveContext} onJumpToMessageInChat={handleJumpToMessageInChat} onEnterSelectionMode={handleEnterSelectionMode}
                 onReplyMessage={handleReplyMessage} onEditMessageStart={() => { if (selectedMessage) { setEditContent(selectedMessage.content); setModalType('edit-message'); } }}
-                onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onCopyMessage={handleCopyMessage}
+                onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onRecallMessage={handleRecallMessage} onCopyMessage={handleCopyMessage}
                 messageFavorited={!!(selectedMessage && contentFavoriteIds.has(contentFavoriteIdForMessage(selectedMessage)))}
                 onToggleMessageFavorite={selectedMessage ? () => handleToggleContentFavorite(selectedMessage) : undefined}
                 onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory} onRenameCategory={handleRenameCategory} onDownloadCategory={handleDownloadCategory}

@@ -1362,6 +1362,28 @@ const MessageItem = React.memo(({
     // Secrets are revealed on entering the home, or inspected in history management.
     if (m.type === 'secret_note') return null;
 
+    // --- 撤回消息：原内容（用户或角色）不再展示，换成跟系统提示同款的圆形 pill。---
+    // 放在 isSystem 判断之前，因为撤回的消息本身是 role: 'user' / 'assistant'，不是 'system'。
+    if (m.metadata?.recalled) {
+        const recallText = m.metadata?.recalledBy === 'assistant' ? `${charName}撤回了一条消息` : '你撤回了一条消息';
+        return (
+            <div className={`flex items-center w-full ${selectionMode ? 'pl-8' : ''} animate-fade-in relative transition-[padding] duration-300`}>
+                {selectionMode && (
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 cursor-pointer z-20" onClick={() => onToggleSelect(m.id)}>
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-slate-300 bg-white/80'}`}>
+                            {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>}
+                        </div>
+                    </div>
+                )}
+                <div className="flex justify-center my-6 px-10 w-full" {...interactionProps}>
+                    <div className="flex items-center gap-1.5 bg-slate-200/40 backdrop-blur-md text-slate-500 px-3 py-1 rounded-full shadow-sm border border-white/20 select-none">
+                        <span className="text-[10px] font-medium tracking-wide">{recallText}</span>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     // --- SYSTEM MESSAGE RENDERING ---
     if (isSystem) {
         const isCallSummary = m.metadata?.source === 'call-end-popup';

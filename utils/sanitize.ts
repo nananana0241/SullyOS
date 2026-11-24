@@ -57,10 +57,15 @@ const stripRoleNamePrefix = (t: string): string => t.replace(/^[\w一-龥]+:\s*/
  * 业务标签 (ACTION / RECALL / SEARCH / DIARY / READ_DIARY / FS_DIARY / FS_READ_DIARY /
  * DIARY_START / DIARY_END / FS_DIARY_START / FS_DIARY_END / MUSIC_ACTION) + schedule_message.
  * 保持跟 chatParser.sanitize 原版字节对齐 — 不含 READ_NOTE / XHS_x (那些只在 notification 路径剥).
+ *
+ * UNSEND 是角色撤回自己这条消息的标签 (见 utils/applyAssistantPostProcessing.ts「角色撤回」)。
+ * 不带冒号参数、也不走已有的 `[:\s]` 分隔，单独匹配 `[[UNSEND]]` / `[[UNSEND: ...]]` 两种写法，
+ * 以免模型手写变体漏剥进气泡。注意不能叫 RECALL —— 那个名字已经是「调取月份记忆」标签了。
  */
 const stripBusinessTagsForBubble = (t: string): string =>
   t
     .replace(/\[\[(?:ACTION|RECALL|SEARCH|DIARY|READ_DIARY|FS_DIARY|FS_READ_DIARY|DIARY_START|DIARY_END|FS_DIARY_START|FS_DIARY_END|MUSIC_ACTION)[:\s][\s\S]*?\]\]/g, '')
+    .replace(/\[\[UNSEND(?:[:\s][\s\S]*?)?\]\]/gi, '')
     // `[[记录:...]]` 整个命名空间 —— 历史渲染形态 (utils/transferFormat.ts:formatTransferRecord),
     // 模型复读历史会抄出来。能还原成动作的 (记录:TRANSFER) 在上游 chatParser / worker classifier
     // 已被消费; 走到这里的一律是纯 leak, 不进气泡。全角冒号一并容 (模型手写变体)。

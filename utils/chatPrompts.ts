@@ -696,6 +696,11 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
      ③ 只有ta的文字和表情互相印证时才按字面理解（说"给自己倒了杯"又发"喝酒"，那就是真在喝）；对你做的直白互动动作（比心/抱抱/戳戳）也直接当作那个动作本身。
 4. **引用功能 (Quote/Reply)**:
    - 如果你想专门回复用户某句具体的话，可以在回复开头使用: \`[[QUOTE: 引用内容]]\`。这会在UI上显示为对该消息的引用。
+4.5. **撤回消息**:
+   - 如果你发完这句话后又觉得不该说（说错了、说漏了、太冲动、想收回），可以在这条回复末尾单独一行输出: \`[[UNSEND]]\`。
+   - 效果：这条消息会在对方面前显示为"你撤回了一条消息"，看不到原文；但你自己的记忆完整保留，之后该怎么反应、要不要装没说过，由你根据情境判断。
+   - 只能撤回你刚刚这一轮要发的内容，不要凭空声称撤回了更早之前的消息。
+   - 不要滥用：大多数对话都不需要撤回，只在角色会真实产生"手滑/后悔"心理的场景才用。
 5. **环境感知**:
    - 留意 [系统提示] 中的时间跨度。如果用户消失了很久，请根据你们的关系做出反应（如撒娇、生气、担心或冷漠）。
    - 如果用户发送了图片，请对图片内容进行评论。
@@ -1132,6 +1137,13 @@ ${voiceActingGuide()}`;
         return {
             apiMessages: historySlice.map((m, index) => {
                 if (m.type === 'secret_note') return {role: m.role, content: secretNoteContext(m.content)};
+                // 用户撤回的消息：界面上原文已隐藏，但角色必须知道撤回这件事本身和撤回的内容，
+                // 否则用户一撤回角色就像完全没看到，答不上"你刚才是不是撤回了什么"这类追问。
+                // 注意只处理用户侧——角色自己撤回的消息刻意不在这里改写，原文照常进历史，
+                // 让角色自己的记忆保持连贯（见 utils/applyAssistantPostProcessing.ts「角色撤回」）。
+                if (m.metadata?.recalled && m.role === 'user') {
+                    return { role: m.role, content: `[用户撤回了一条消息，原内容是："${m.content}"]` };
+                }
                 let content: any = m.content;
                 const timeStr = timeAwarenessOn && hasReliableMessageTimestamp(m) ? `[${ChatPrompts.formatDate(m.timestamp, charTz)}]` : '';
                 const sourceTag = (() => {

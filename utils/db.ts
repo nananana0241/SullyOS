@@ -1073,6 +1073,21 @@ export const DB = {
     });
   },
 
+  /**
+   * 撤回一条消息（用户或角色）。不做物理删除，只在 metadata 打标记——
+   * 聊天界面据此把原内容换成「XX撤回了一条消息」的系统提示，但发给 AI 的上下文
+   * 仍需要知道撤回这件事发生过（见 utils/chatPrompts.ts buildMessageHistory）。
+   * 不需要 DB_VERSION 升版：metadata 本身是无 schema 的自由字段。
+   */
+  recallMessage: async (id: number, by: 'user' | 'assistant'): Promise<void> => {
+    await DB.updateMessageMetadata(id, (prev: any) => ({
+        ...(prev || {}),
+        recalled: true,
+        recalledBy: by,
+        recalledAt: Date.now(),
+    }));
+  },
+
   deleteMessage: async (id: number): Promise<void> => {
     const { preserveContentFavoritesBeforeMessageDeletion } = await import('./contentFavorites');
     await preserveContentFavoritesBeforeMessageDeletion({ ids: [id] });
