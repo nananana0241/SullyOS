@@ -826,6 +826,14 @@ export async function applyAssistantPostProcessing(
     // 与原 inline 末尾逻辑一致。抽出来是为了让"执行功能前的本轮正文 A"能在二轮前先展示, 二轮结果 B 复用同一套。
     let sarSurfaceClaimed = false;
     const renderAndPersist = async (rawContent: string, firstThinkingChain: string | null): Promise<void> => {
+        // 角色撤回自己这轮消息：模型写 `[[UNSEND]]`。必须在 ChatParser.sanitize 把标签剥掉之前
+        // 检测（下面 content = sanitize(rawContent) 那行会清掉它），检测到就给这轮产出的
+        // 每条气泡的 metadata 打上 recalled 标记——聊天界面据此把气泡换成「XX撤回了一条消息」，
+        // 但 metadata.content 原文仍完整留着，发给 AI 的上下文里角色自己依旧"记得"说过什么
+        // （只是用户看不到），见 utils/chatPrompts.ts buildMessageHistory。
+        // 不叫 [[RECALL]] —— 那个名字是角色"调取月份记忆"的既有标签，撞了会连带触发二轮重生。
+        const UNSEND_TAG_RE = /\[\[UNSEND(?:[:\s][\s\S]*?)?\]\]/i;
+        const isUnsendTurn = UNSEND_TAG_RE.test(rawContent);
         let firstMeta: any = firstThinkingChain ? { thinkingChain: firstThinkingChain } : null;
         const surfaceChunks = !sarSurfaceClaimed && sarModuleSurface?.surface
             ? splitSARChatSurfaceBubbles(sarModuleSurface.surface)
@@ -842,8 +850,9 @@ export async function applyAssistantPostProcessing(
             const sarMeta = surfaceChunk && sarModuleSurface
                 ? { sarModuleSurface: { ...sarModuleSurface, surface: surfaceChunk } }
                 : undefined;
-            const merged = firstMeta || sarMeta
-                ? { ...(base || {}), ...(sarMeta || {}), ...(firstMeta || {}) }
+            const recalledMeta = isUnsendTurn ? { recalled: true, recalledBy: 'assistant' as const, recalledAt: Date.now() } : undefined;
+            const merged = firstMeta || sarMeta || recalledMeta
+                ? { ...(base || {}), ...(sarMeta || {}), ...(recalledMeta || {}), ...(firstMeta || {}) }
                 : base;
             firstMeta = null;
             return merged;
